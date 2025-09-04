@@ -1,0 +1,31 @@
+{
+  "name": "cemetery-mapping-system",
+  "version": "1.0.0",
+  "description": "Web Application GIS-Based Cemetery Mapping and Tracking System with QR Integration for Garden of Peace",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:frontend": "npm run dev --workspace=frontend",
+    "dev:backend": "npm run dev --workspace=backend",
+    "build": "npm run build --workspace=frontend",
+    "start": "npm run start --workspace=backend",
+    "install:all": "npm install && npm install --workspace=frontend && npm install --workspace=backend"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "keywords": [
+    "cemetery",
+    "gis",
+    "mapping",
+    "qr-code",
+    "tracking"
+  ],
+  "dependencies": {
+    "bcrypt": "^6.0.0"
+  }
+}
