@@ -1,14 +1,14 @@
 import Topbar from "../components/Topbar";
 import Sidebar from "../components/Sidebar";
-import Footer from "../components/Footer"; 
+import Footer from "../components/Footer";
 
 export default function RoleLayout({ base, children }) {
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col">
+    <div className="bg-gray-50">
       <Topbar />
-      <div className="flex flex-1">
+      <div className="min-h-screen pt-20 flex">
         <Sidebar base={base} />
-        <main className="flex-1 p-4 mb-20">
+        <main className="flex-1 p-4 overflow-y-auto">
           {children}
         </main>
       </div>

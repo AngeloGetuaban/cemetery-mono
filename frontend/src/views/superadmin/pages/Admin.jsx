@@ -4,10 +4,11 @@ import { Eye, Pencil, Trash2, Plus } from "lucide-react";
 import AddModal from "../../components/AddModal";
 import EditModal from "../../components/EditModal";
 import DetailsModal from "../../components/DetailsModal";
-
+import { deleteUser } from "../js/delete-user";
 import { addUser } from "../js/add-user";
 import { getUsers } from "../js/get-users";
-import { updateUser } from "../js/update-user"; // <-- new
+import { updateUser } from "../js/update-user";
+import { showSuccess, showError, confirmWarning } from "../../utitlities/alerts.js";
 
 export default function AdminManagement() {
   const [rows, setRows] = useState([]);
@@ -16,28 +17,22 @@ export default function AdminManagement() {
   const [showEdit, setShowEdit] = useState(false);
   const [selected, setSelected] = useState(null);
 
+  const isAdmin = (u) => `${u?.role || ""}`.toLowerCase() === "admin";
+
   useEffect(() => {
     (async () => {
       const result = await getUsers();
-      if (result.ok) setRows(result.data);
+      if (result.ok) setRows(result.data.filter(isAdmin));   // <-- only admins
       else console.error(result.error);
     })();
   }, []);
 
-  // Debug
-  useEffect(() => {
-    console.log("Modal state - showView:", showView, "selected:", selected);
-  }, [showView, selected]);
-
-  const updateActive = (id, next) =>
-    setRows((prev) =>
-      prev.map((r) =>
-        r.id === id ? { ...r, active: next, is_active: next ? 1 : 0 } : r
-      )
-    );
+  const refreshUsers = async () => {
+    const usersRes = await getUsers();
+    if (usersRes.ok) setRows(usersRes.data.filter(isAdmin)); // <-- only admins
+  };
 
   const handleView = (row) => {
-    console.log("handleView called with row:", row);
     setSelected(row);
     setShowView(true);
   };
@@ -47,10 +42,23 @@ export default function AdminManagement() {
     setShowEdit(true);
   };
 
-  const handleDelete = (row) => {
-    if (confirm(`Delete ${row.name || row.username || "this user"}?`)) {
-      setRows((prev) => prev.filter((r) => r.id !== row.id));
+  const handleDelete = async (row) => {
+    const ok = await confirmWarning({
+      title: "Delete user?",
+      message: `This will permanently remove "${row.first_name || row.username || "this user"}".`,
+      confirmText: "Delete",
+      cancelText: "Cancel",
+    });
+    if (!ok) return;
+
+    const res = await deleteUser(row.id);
+    if (!res.ok) {
+      showError(`Delete failed: ${res.error}`, { duration: 3000 });
+      return;
     }
+
+    await refreshUsers();
+    showSuccess("User deleted.", { duration: 3000 });
   };
 
   const handleCloseView = () => {
@@ -66,7 +74,6 @@ export default function AdminManagement() {
   const columns = [
     { key: "first_name", label: "First Name" },
     { key: "last_name", label: "Last Name" },
-    { key: "phone", label: "Phone" },
     { key: "email", label: "Email" },
     { key: "username", label: "Username" },
     { key: "password_str", label: "Password" },
@@ -161,62 +168,56 @@ export default function AdminManagement() {
   };
 
   const handleAddSubmit = async (vals) => {
+    setShowAdd(false);
     const password_str = genPass();
     const payload = {
-      username: vals.username,
-      email: vals.email,
-      first_name: vals.first_name,
-      last_name: vals.last_name,
+      ...vals,
       phone: vals.phone || "",
       address: vals.address || "",
-      role: "admin",
+      role: "admin",                 // ensure role
       is_active: 1,
       password_str,
     };
 
     const result = await addUser(payload);
     if (!result.ok) {
-      alert(`❌ Add failed: ${result.error}`);
+      showError(`Add failed: ${result.error}`, { duration: 3000 });
       return;
     }
 
-    alert(`✅ User added successfully.\nTemporary password: ${password_str}`);
-
-    const usersRes = await getUsers();
-    if (usersRes.ok) setRows(usersRes.data);
-
-    setShowAdd(false);
+    await refreshUsers();
+    showSuccess(`User Added Successfully`, { duration: 3000 });
   };
 
   const handleEditSubmit = async (vals, record) => {
-    // Build update payload
+    setShowEdit(false);
+    setSelected(null);
+
     const payload = {
-      username: vals.username,
-      email: vals.email,
-      first_name: vals.first_name,
-      last_name: vals.last_name,
-      phone: vals.phone || "",
-      address: vals.address || "",
-      // send only if user typed a new password
-      ...(vals.password_str ? { password_str: vals.password_str } : {}),
-      is_active: vals.is_active ? 1 : 0,
-      role: record?.role || "admin",
+      username: (vals.username ?? record.username)?.trim(),
+      email: (vals.email ?? record.email)?.trim(),
+      first_name: (vals.first_name ?? record.first_name)?.trim(),
+      last_name: (vals.last_name ?? record.last_name)?.trim(),
+      phone: (vals.phone ?? record.phone ?? "").trim(),
+      address: (vals.address ?? record.address ?? "").trim(),
+      is_active:
+        typeof vals.is_active !== "undefined" ? (vals.is_active ? 1 : 0) : (record?.is_active ?? 1),
+      role: "admin",                 // force admin on update
     };
+
+    if (Object.prototype.hasOwnProperty.call(vals, "password_str")) {
+      const pwd = `${vals.password_str}`.trim();
+      if (pwd.length > 0) payload.password_str = pwd;
+    }
 
     const res = await updateUser(record.id, payload);
     if (!res.ok) {
-      alert(`❌ Update failed: ${res.error}`);
+      showError(`Update failed: ${res.error}`, { duration: 3000 });
       return;
     }
 
-    alert("✅ User updated successfully.");
-
-    // Refresh rows
-    const usersRes = await getUsers();
-    if (usersRes.ok) setRows(usersRes.data);
-
-    setShowEdit(false);
-    setSelected(null);
+    await refreshUsers();
+    showSuccess("User updated successfully.", { duration: 3000 });
   };
 
   return (
@@ -233,7 +234,6 @@ export default function AdminManagement() {
 
       <UniversalTable columns={columns} data={rows} rowKey="id" />
 
-      {/* Add Modal */}
       <AddModal
         open={showAdd}
         title="Add Admin"
@@ -242,8 +242,6 @@ export default function AdminManagement() {
         onSubmit={handleAddSubmit}
         onClose={() => setShowAdd(false)}
       />
-
-      {/* View Modal */}
       <DetailsModal
         open={showView}
         title="Admin Details"
@@ -251,8 +249,6 @@ export default function AdminManagement() {
         record={selected}
         onClose={handleCloseView}
       />
-
-      {/* Edit Modal */}
       <EditModal
         open={showEdit}
         title="Edit Admin"

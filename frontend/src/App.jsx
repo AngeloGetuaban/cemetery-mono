@@ -20,12 +20,19 @@ const SuperAdminDash = lazy(() => import("./views/superadmin/pages/Dashboard"));
 const SuperAdminAdmin = lazy(() => import("./views/superadmin/pages/Admin"));
 const SuperAdminStaff = lazy(() => import("./views/superadmin/pages/Staff"));
 const SuperAdminVisitor = lazy(() => import("./views/superadmin/pages/Visitor"));
+import AlertsHost from "./views/components/AlertsHost";
+import CemeterySetup from "./views/admin/pages/CemeterySetup";
+import BurialPlots from "./views/admin/pages/BurialPlots";
+import BurialRecords from "./views/admin/pages/BurialRecords";
+import RoadPlots from "./views/admin/pages/RoadPlots";
+import BuildingPlots from "./views/admin/pages/BuildingPlots";
 function Loading() { return <div className="p-6">Loading…</div>; }
 
 export default function App() {
   return (
     <BrowserRouter>
       <Suspense fallback={<Loading />}>
+        <AlertsHost />
         <Routes>
           <Route path="/" element={<Navigate to="/visitor/home" replace />} />
 
@@ -62,6 +69,11 @@ export default function App() {
                 <RoleLayout base="/admin">
                   <Routes>
                     <Route path="dashboard" element={<AdminDash />} />
+                    <Route path="setup" element={<CemeterySetup />} />
+                    <Route path="plots" element={<BurialPlots />} />
+                    <Route path="road-plots" element={<RoadPlots />} />
+                    <Route path="building-plots" element={<BuildingPlots />} />
+                    <Route path="records" element={<BurialRecords />} />
                     <Route path="settings" element={<AdminSet />} />
                     <Route path="*" element={<Navigate to="/admin/dashboard" replace />} />
                   </Routes>
@@ -87,8 +99,6 @@ export default function App() {
               }
             />
           </Route>
-
-
           <Route
             path="*"
             element={<BareLayout><div className="p-6">404 — Not Found</div></BareLayout>}

@@ -28,8 +28,7 @@ export async function addUser(payload) {
   if (!auth?.token) {
     return { ok: false, error: "Not authenticated." };
   }
-
-  // Try to get an ID from the JWT first; fall back to auth.user.id
+  
   let actorId = null;
   const jwt = decodeJwtPayload(auth.token);
   actorId =

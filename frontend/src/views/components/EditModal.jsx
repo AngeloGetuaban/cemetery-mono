@@ -15,7 +15,6 @@ export default function EditModal({
   const initialValues = useMemo(() => {
     const out = {};
     fields.forEach((f) => {
-      // Use existing record value or default/empty
       if (record && typeof record[f.name] !== "undefined") {
         out[f.name] = record[f.name];
       } else if (typeof f.defaultValue !== "undefined") {
@@ -32,24 +31,32 @@ export default function EditModal({
   const [values, setValues] = useState(initialValues);
   const [submitting, setSubmitting] = useState(false);
 
+  // Track which fields are currently toggled into "edit" mode (used for passwords)
+  const [editToggle, setEditToggle] = useState({}); // { [fieldName]: true|false }
+  const toggleEdit = (name, next) =>
+    setEditToggle((p) => ({ ...p, [name]: typeof next === "boolean" ? next : !p[name] }));
+
   useEffect(() => {
     if (open) {
       setValues(initialValues);
-      document.body.style.overflow = 'hidden';
+      // reset edit toggles for fresh open
+      const initToggles = {};
+      fields.forEach((f) => {
+        if (f.type === "password") initToggles[f.name] = false; // disabled by default
+      });
+      setEditToggle(initToggles);
+      document.body.style.overflow = "hidden";
     } else {
-      document.body.style.overflow = 'auto';
+      document.body.style.overflow = "auto";
     }
-    
     return () => {
-      document.body.style.overflow = 'auto';
+      document.body.style.overflow = "auto";
     };
-  }, [open, initialValues]);
+  }, [open, initialValues, fields]);
 
   useEffect(() => {
     const onKey = (e) => e.key === "Escape" && open && onClose?.();
-    if (open) {
-      window.addEventListener("keydown", onKey);
-    }
+    if (open) window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
@@ -88,7 +95,14 @@ export default function EditModal({
     if (!onSubmit) return;
     setSubmitting(true);
     try {
-      await onSubmit(values, record);
+      // Build payload; omit password fields that are NOT toggled on
+      const payload = { ...values };
+      fields.forEach((f) => {
+        if (f.type === "password" && !editToggle[f.name]) {
+          delete payload[f.name];
+        }
+      });
+      await onSubmit(payload, record);
     } finally {
       setSubmitting(false);
     }
@@ -99,19 +113,17 @@ export default function EditModal({
       "w-full rounded-xl border border-gray-200 bg-white px-4 py-3 outline-none focus:ring-4 focus:ring-emerald-100 focus:border-emerald-300 transition-all duration-200 text-gray-900 placeholder-gray-500";
     const labelCls = "block text-sm font-semibold text-gray-900 mb-2";
     const req = f.required ? (
-      <span className="ml-1 text-rose-500" title="Required">*</span>
+      <span className="ml-1 text-rose-500" title="Required">
+        *
+      </span>
     ) : null;
 
-    // Handle read-only fields (like ID, created_at, etc.)
     if (f.readOnly || f.disabled) {
       return (
-        <div 
+        <div
           key={f.name}
           className="group"
-          style={{ 
-            animationDelay: `${index * 100}ms`,
-            animation: 'slideInUp 0.5s ease-out forwards'
-          }}
+          style={{ animationDelay: `${index * 100}ms`, animation: "slideInUp 0.5s ease-out forwards" }}
         >
           <label className={labelCls}>
             {f.label}
@@ -129,13 +141,10 @@ export default function EditModal({
     switch (f.type) {
       case "select":
         return (
-          <div 
+          <div
             key={f.name}
             className="group"
-            style={{ 
-              animationDelay: `${index * 100}ms`,
-              animation: 'slideInUp 0.5s ease-out forwards'
-            }}
+            style={{ animationDelay: `${index * 100}ms`, animation: "slideInUp 0.5s ease-out forwards" }}
           >
             <label className={labelCls}>
               {f.label}
@@ -168,13 +177,10 @@ export default function EditModal({
 
       case "textarea":
         return (
-          <div 
+          <div
             key={f.name}
             className="group"
-            style={{ 
-              animationDelay: `${index * 100}ms`,
-              animation: 'slideInUp 0.5s ease-out forwards'
-            }}
+            style={{ animationDelay: `${index * 100}ms`, animation: "slideInUp 0.5s ease-out forwards" }}
           >
             <label className={labelCls}>
               {f.label}
@@ -193,13 +199,10 @@ export default function EditModal({
       case "switch":
       case "checkbox":
         return (
-          <div 
+          <div
             key={f.name}
             className="group col-span-2"
-            style={{ 
-              animationDelay: `${index * 100}ms`,
-              animation: 'slideInUp 0.5s ease-out forwards'
-            }}
+            style={{ animationDelay: `${index * 100}ms`, animation: "slideInUp 0.5s ease-out forwards" }}
           >
             <div className="flex items-center gap-4 p-4 bg-gray-50 rounded-xl border border-gray-100 hover:bg-gray-100 transition-colors duration-200">
               <div className="relative">
@@ -210,25 +213,24 @@ export default function EditModal({
                   checked={!!values[f.name]}
                   onChange={(e) => set(f.name, e.target.checked)}
                 />
-                <div 
+                <div
                   className={`w-6 h-6 rounded-lg border-2 transition-all duration-200 cursor-pointer ${
-                    values[f.name] 
-                      ? 'bg-emerald-500 border-emerald-500' 
-                      : 'bg-white border-gray-300 hover:border-emerald-300'
+                    values[f.name] ? "bg-emerald-500 border-emerald-500" : "bg-white border-gray-300 hover:border-emerald-300"
                   }`}
                   onClick={() => set(f.name, !values[f.name])}
                 >
                   {values[f.name] && (
                     <svg className="w-4 h-4 text-white absolute top-0.5 left-0.5" fill="currentColor" viewBox="0 0 20 20">
-                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                      <path
+                        fillRule="evenodd"
+                        d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                        clipRule="evenodd"
+                      />
                     </svg>
                   )}
                 </div>
               </div>
-              <label
-                htmlFor={`edit-field-${f.name}`}
-                className="text-sm font-medium text-gray-900 cursor-pointer"
-              >
+              <label htmlFor={`edit-field-${f.name}`} className="text-sm font-medium text-gray-900 cursor-pointer">
                 {f.label}
                 {req}
               </label>
@@ -238,13 +240,10 @@ export default function EditModal({
 
       case "number":
         return (
-          <div 
+          <div
             key={f.name}
             className="group"
-            style={{ 
-              animationDelay: `${index * 100}ms`,
-              animation: 'slideInUp 0.5s ease-out forwards'
-            }}
+            style={{ animationDelay: `${index * 100}ms`, animation: "slideInUp 0.5s ease-out forwards" }}
           >
             <label className={labelCls}>
               {f.label}
@@ -266,13 +265,10 @@ export default function EditModal({
 
       case "email":
         return (
-          <div 
+          <div
             key={f.name}
             className="group"
-            style={{ 
-              animationDelay: `${index * 100}ms`,
-              animation: 'slideInUp 0.5s ease-out forwards'
-            }}
+            style={{ animationDelay: `${index * 100}ms`, animation: "slideInUp 0.5s ease-out forwards" }}
           >
             <label className={labelCls}>
               {f.label}
@@ -289,40 +285,68 @@ export default function EditModal({
           </div>
         );
 
-      case "password":
+      case "password": {
+        const isEditing = !!editToggle[f.name]; // false by default
         return (
-          <div 
+          <div
             key={f.name}
             className="group"
-            style={{ 
-              animationDelay: `${index * 100}ms`,
-              animation: 'slideInUp 0.5s ease-out forwards'
-            }}
+            style={{ animationDelay: `${index * 100}ms`, animation: "slideInUp 0.5s ease-out forwards" }}
           >
             <label className={labelCls}>
               {f.label}
-              {req}
+              {isEditing && req}
             </label>
-            <input
-              type="password"
-              className={common}
-              placeholder={f.placeholder || "Enter password..."}
-              value={values[f.name] ?? ""}
-              onChange={(e) => set(f.name, e.target.value)}
-              required={!!f.required}
-            />
+            <div className="flex gap-3">
+              <input
+                type="password"
+                className={`${common} ${!isEditing ? "bg-gray-50 text-gray-500 cursor-not-allowed" : ""}`}
+                placeholder={
+                  isEditing
+                    ? f.placeholder || "Enter new password..."
+                    : "Current password unchanged"
+                }
+                value={values[f.name] ?? ""}
+                onChange={(e) => set(f.name, e.target.value)}
+                disabled={!isEditing}
+                required={!!f.required && isEditing}
+                autoComplete="new-password"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !isEditing;
+                  toggleEdit(f.name, next);
+                  if (!next) {
+                    // Turning OFF edit mode: clear any typed value
+                    set(f.name, "");
+                  }
+                }}
+                className={`shrink-0 px-4 py-2.5 rounded-xl font-medium transition-colors duration-200 ${
+                  isEditing
+                    ? "bg-gray-100 text-gray-800 hover:bg-gray-200"
+                    : "bg-emerald-600 text-white hover:bg-emerald-700"
+                }`}
+                title={isEditing ? "Keep existing password" : "Change Password"}
+              >
+                {isEditing ? "Keep Current" : "Change Password"}
+              </button>
+            </div>
+            {!isEditing && (
+              <p className="mt-2 text-xs text-gray-500">
+                Password will remain unchanged unless you click <span className="font-medium">Change Password</span>.
+              </p>
+            )}
           </div>
         );
+      }
 
       default:
         return (
-          <div 
+          <div
             key={f.name}
             className="group"
-            style={{ 
-              animationDelay: `${index * 100}ms`,
-              animation: 'slideInUp 0.5s ease-out forwards'
-            }}
+            style={{ animationDelay: `${index * 100}ms`, animation: "slideInUp 0.5s ease-out forwards" }}
           >
             <label className={labelCls}>
               {f.label}
@@ -361,10 +385,12 @@ export default function EditModal({
                 <div>
                   <h3 className="text-2xl font-bold text-white mb-1">{title}</h3>
                   <p className="text-emerald-100 text-sm">
-                    {record?.first_name && record?.last_name 
-                      ? `Editing ${record.first_name} ${record.last_name}` 
-                      : record?.username ? `Editing ${record.username}`
-                      : record?.email ? `Editing ${record.email}`
+                    {record?.first_name && record?.last_name
+                      ? `Editing ${record.first_name} ${record.last_name}`
+                      : record?.username
+                      ? `Editing ${record.username}`
+                      : record?.email
+                      ? `Editing ${record.email}`
                       : "Update the information below"}
                   </p>
                 </div>
@@ -378,7 +404,6 @@ export default function EditModal({
                 <X size={20} />
               </button>
             </div>
-            {/* Decorative elements */}
             <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 rounded-full -translate-y-16 translate-x-16"></div>
             <div className="absolute bottom-0 left-0 w-20 h-20 bg-white/5 rounded-full translate-y-10 -translate-x-10"></div>
           </div>
@@ -386,9 +411,7 @@ export default function EditModal({
           {/* Body */}
           <form onSubmit={handleSubmit} className="px-8 py-6">
             <div className="max-h-[50vh] overflow-y-auto">
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {fields.map(renderField)}
-              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">{fields.map(renderField)}</div>
             </div>
 
             {/* Footer */}
@@ -410,7 +433,11 @@ export default function EditModal({
                   <>
                     <svg className="animate-spin w-4 h-4 text-white" fill="none" viewBox="0 0 24 24">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                      ></path>
                     </svg>
                     Updating...
                   </>
@@ -426,7 +453,7 @@ export default function EditModal({
         </div>
       </div>
 
-      <style jsx>{`
+      <style >{`
         @keyframes slideInUp {
           from {
             opacity: 0;
@@ -437,31 +464,35 @@ export default function EditModal({
             transform: translateY(0);
           }
         }
-        
+
         @keyframes fade-in {
-          from { opacity: 0; }
-          to { opacity: 1; }
+          from {
+            opacity: 0;
+          }
+          to {
+            opacity: 1;
+          }
         }
-        
+
         @keyframes zoom-in-95 {
-          from { 
+          from {
             opacity: 0;
             transform: scale(0.95);
           }
-          to { 
+          to {
             opacity: 1;
             transform: scale(1);
           }
         }
-        
+
         .animate-in {
           animation-fill-mode: both;
         }
-        
+
         .fade-in {
           animation: fade-in var(--duration, 300ms) ease-out;
         }
-        
+
         .zoom-in-95 {
           animation: zoom-in-95 var(--duration, 300ms) ease-out;
         }

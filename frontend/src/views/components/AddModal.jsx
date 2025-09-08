@@ -288,7 +288,7 @@ export default function AddModal({
         </div>
       </div>
 
-      <style jsx>{`
+      <style >{`
         @keyframes slideInUp {
           from {
             opacity: 0;

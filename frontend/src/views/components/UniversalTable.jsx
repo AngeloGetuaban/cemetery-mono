@@ -1,6 +1,5 @@
 import React from "react";
 
-/** Toggle stays as-is */
 export function Toggle({ checked, onChange, label }) {
   return (
     <button
@@ -26,13 +25,6 @@ export function Toggle({ checked, onChange, label }) {
   );
 }
 
-/**
- * UniversalTable — "lined table" style (like screenshot)
- * - columns: [{ key, label, width?, render?: (row) => ReactNode, align?: 'left'|'center'|'right' }]
- * - data: object[]
- * - rowKey: unique field (default "id")
- * - onRowClick?: (row) => void
- */
 export default function UniversalTable({
   columns = [],
   data = [],

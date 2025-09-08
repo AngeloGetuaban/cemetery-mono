@@ -21,6 +21,10 @@ const W_FULL = 272;
 const W_COLLAPSED = 120;
 const cx = (...c) => c.filter(Boolean).join(" ");
 
+// Same pattern used in your API helpers
+const API_BASE =
+  (typeof import.meta !== "undefined" && import.meta.env?.VITE_API_BASE_URL) || "";
+
 export default function Sidebar({ base = "" }) {
   const [collapsed, setCollapsed] = useState(false);
   const [q, setQ] = useState("");
@@ -54,17 +58,18 @@ export default function Sidebar({ base = "" }) {
       return [
         { to: "/dashboard", label: "Dashboard", icon: I.dashboard },
         { to: "/admin",     label: "Admins",    icon: I.admins },
-        { to: "/staff",      label: "Staff",     icon: I.staff },
+        { to: "/staff",     label: "Staff",     icon: I.staff },
         { to: "/visitor",   label: "Visitors",  icon: I.visitors },
       ];
     }
     if (role === "admin") {
       return [
-        { to: "/admin/dashboard", label: "Dashboard",       icon: I.dashboard },
-        { to: "/admin/setup",     label: "Cemetery Setup",  icon: I.setup },
-        { to: "/admin/plots",     label: "Burial Plots",    icon: I.plots },
-        { to: "/admin/records",   label: "Burial Records",  icon: I.records },
-        { to: "/admin/staff",     label: "Staff Management",icon: I.staffmgmt },
+        { to: "/dashboard", label: "Dashboard",       icon: I.dashboard },
+        { to: "/setup",     label: "Cemetery Setup",  icon: I.setup },
+        { to: "/plots",     label: "Burial Plots",    icon: I.plots },
+        { to: "/road-plots", label: "Road Plots",    icon: I.plots },
+        { to: "/building-plots", label: "Building Plots",    icon: I.plots },
+        { to: "/records",   label: "Burial Records",  icon: I.records },
       ];
     }
     if (role === "staff") {
@@ -81,6 +86,21 @@ export default function Sidebar({ base = "" }) {
   const filtered = q
     ? items.filter((i) => i.label.toLowerCase().includes(q.toLowerCase()))
     : items;
+
+  async function logout() {
+    try {
+      const token = auth?.token;
+      await fetch(`${API_BASE}/logout`, {
+        method: "POST",
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }).catch(() => {});
+    } finally {
+      localStorage.removeItem("auth");
+      window.location.href = "/visitor/login";
+    }
+  }
 
   return (
     <>
@@ -113,7 +133,6 @@ export default function Sidebar({ base = "" }) {
               </button>
             </div>
 
-            {/* search pill */}
             {!collapsed && (
               <div className="mt-3">
                 <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
@@ -130,43 +149,41 @@ export default function Sidebar({ base = "" }) {
           </div>
         </div>
 
-        {/* Divider */}
         <div className="px-4">
           <div className="mt-3 border-b border-slate-200" />
         </div>
 
-        {/* Scrollable list with active purple pill + icon tile */}
         <nav className="flex-1 overflow-y-auto px-3 pt-2">
           {filtered.map(({ to, label, icon: Icon }) => (
             <NavLink
-            key={to}
-            to={`${prefix}${to}`}
-            end // ensures "/dashboard" is exact match
-            className={({ isActive }) =>
-              cx(
-                "group flex items-center gap-3 rounded-xl p-2 text-[14px] font-medium transition-all mb-1",
-                isActive
-                  ? "bg-gradient-to-r from-green-500 to-emerald-600 text-white shadow-lg"
-                  : "text-slate-700 hover:bg-slate-100 hover:text-slate-900"
-              )
-            }
-          >
-            {({ isActive }) => (
-              <>
-                <span
-                  className={cx(
-                    "grid place-items-center h-9 w-9 rounded-[12px] border transition-colors",
-                    isActive
-                      ? "bg-white/20 border-white/20 text-white"
-                      : "bg-white border-slate-200 text-slate-600 group-hover:text-slate-900"
-                  )}
-                >
-                  <Icon size={18} />
-                </span>
-                {!collapsed && <span className="truncate">{label}</span>}
-              </>
-            )}
-          </NavLink>
+              key={to}
+              to={`${prefix}${to}`}
+              end
+              className={({ isActive }) =>
+                cx(
+                  "group flex items-center gap-3 rounded-xl p-2 text-[14px] font-medium transition-all mb-1",
+                  isActive
+                    ? "bg-gradient-to-r from-green-500 to-emerald-600 text-white shadow-lg"
+                    : "text-slate-700 hover:bg-slate-100 hover:text-slate-900"
+                )
+              }
+            >
+              {({ isActive }) => (
+                <>
+                  <span
+                    className={cx(
+                      "grid place-items-center h-9 w-9 rounded-[12px] border transition-colors",
+                      isActive
+                        ? "bg-white/20 border-white/20 text-white"
+                        : "bg-white border-slate-200 text-slate-600 group-hover:text-slate-900"
+                    )}
+                  >
+                    <Icon size={18} />
+                  </span>
+                  {!collapsed && <span className="truncate">{label}</span>}
+                </>
+              )}
+            </NavLink>
           ))}
           <div className="h-6" />
         </nav>
@@ -177,10 +194,7 @@ export default function Sidebar({ base = "" }) {
             <button
               type="button"
               className="w-full flex items-center gap-3 rounded-2xl px-3 py-3 text-[14px] font-medium text-slate-700 hover:bg-slate-100"
-              onClick={() => {
-                localStorage.removeItem("auth");
-                window.location.href = "/visitor/login";
-              }}
+              onClick={logout}
             >
               <span className="grid place-items-center h-9 w-9 rounded-[12px] border border-slate-200 text-slate-600">
                 <LogOut size={18} />

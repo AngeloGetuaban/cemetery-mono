@@ -5,5 +5,6 @@ router.use('/auth', require('./auth.routes'));
 router.use('/admin', require('./admin.routes'));
 router.use('/staff', require('./staff.routes'));
 router.use('/visitor', require('./visitor.routes'));
+router.use('/plot', require('./plot.routes'));
 
 module.exports = router;

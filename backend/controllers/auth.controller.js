@@ -115,17 +115,6 @@ async function register(req, res, next) {
   }
 }
 
-async function logout(req, res, next) {
-  try {
-    if (req.user?.id) {
-      await pool.query('UPDATE users SET updated_at = NOW() WHERE id = $1', [req.user.id]);
-    }
-    return res.json({ ok: true, message: 'Logged out' });
-  } catch (err) {
-    next(err);
-  }
-}
-
 async function me(req, res, next) {
   try {
     if (!req.user?.id) return res.status(401).json({ error: 'Unauthorized' });
@@ -209,6 +198,21 @@ async function changePassword(req, res, next) {
     next(err);
   }
 }
+
+async function logout(req, res, next) {
+  try {
+    req.session.destroy((err) => {
+      if (err) {
+        return next(err);
+      }
+      res.clearCookie("connect.sid"); // clear cookie on client
+      return res.json({ ok: true, message: "Logged out, session destroyed" });
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 
 module.exports = {
   login,
