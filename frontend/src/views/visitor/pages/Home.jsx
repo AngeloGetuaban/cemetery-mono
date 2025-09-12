@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-
+import { NavLink } from 'react-router-dom';
 export default function Home() {
   const [isVisible, setIsVisible] = useState(false);
   const [showSecondSection, setShowSecondSection] = useState(false);
@@ -156,12 +156,20 @@ export default function Home() {
               <div className={`mt-8 flex flex-wrap gap-3 transform transition-all duration-1000 ease-out delay-700 ${
                 isVisible ? 'translate-y-0 opacity-100' : 'translate-y-8 opacity-0'
               }`}>
-                <button className="inline-flex items-center gap-2 rounded-full bg-emerald-600 px-6 py-3 text-white font-semibold shadow-md hover:shadow-lg hover:bg-emerald-700 hover:scale-105 transition-all duration-300 transform">
+                <NavLink
+                  to="/visitor/search"
+                  className="inline-flex items-center gap-2 rounded-full bg-emerald-600 px-6 py-3 text-white font-semibold shadow-md hover:shadow-lg hover:bg-emerald-700 hover:scale-105 transition-all duration-300"
+                >
                   <span>Find a Grave</span>
-                </button>
-                <button className="inline-flex items-center gap-2 rounded-full bg-slate-600 px-6 py-3 text-white font-semibold shadow-md hover:shadow-lg hover:bg-slate-700 hover:scale-105 transition-all duration-300 transform">
+                </NavLink>
+
+                {/* Scan QR Code -> /visitor/search (same destination) */}
+                <NavLink
+                  to="/visitor/search"
+                  className="inline-flex items-center gap-2 rounded-full bg-slate-600 px-6 py-3 text-white font-semibold shadow-md hover:shadow-lg hover:bg-slate-700 hover:scale-105 transition-all duration-300"
+                >
                   <span>Scan QR Code</span>
-                </button>
+                </NavLink>
               </div>
             </div>
 

@@ -16,5 +16,6 @@ router.delete("/delete-road-plot/:id", adminController.deleteRoadPlots);
 router.post("/add-building-plot", adminController.addBuildingPlots);
 router.put("/edit-building-plot", adminController.editBuildingPlots);
 router.delete("/delete-building-plot/:id", adminController.deleteBuildingPlots);
-
+router.get('/graves', adminController.getBurialRecords);
+router.post('/graves', adminController.addBurialRecord);
 module.exports = router;

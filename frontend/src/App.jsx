@@ -13,7 +13,6 @@ const StaffSet  = lazy(() => import("./views/staff/pages/Settings"));
 
 const VisitorHome = lazy(() => import("./views/visitor/pages/Home"));
 const VisitorLogin = lazy(() => import("./views/login/Login"));
-const VisitorDash = lazy(() => import("./views/visitor/pages/Dashboard"));
 const VisitorSet  = lazy(() => import("./views/visitor/pages/Settings"));
 
 const SuperAdminDash = lazy(() => import("./views/superadmin/pages/Dashboard"));
@@ -26,6 +25,7 @@ import BurialPlots from "./views/admin/pages/BurialPlots";
 import BurialRecords from "./views/admin/pages/BurialRecords";
 import RoadPlots from "./views/admin/pages/RoadPlots";
 import BuildingPlots from "./views/admin/pages/BuildingPlots";
+import SearchForDeceased from "./views/visitor/pages/SearchForDeceased";
 function Loading() { return <div className="p-6">Loading…</div>; }
 
 export default function App() {
@@ -40,7 +40,7 @@ export default function App() {
             <Route index element={<Navigate to="home" replace />} />
             <Route path="home" element={<VisitorHome />} />
             <Route path="login" element={<VisitorLogin />} />
-            <Route path="dashboard" element={<VisitorDash />} />
+            <Route path="search" element={<SearchForDeceased />} />
             <Route path="settings" element={<VisitorSet />} />
             <Route path="*" element={<Navigate to="home" replace />} />
           </Route>

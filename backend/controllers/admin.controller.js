@@ -225,7 +225,6 @@ function makePlotHandlers(tableName) {
   return { add, edit, del };
 }
 
-/* ---------------- create handlers for both new tables ---------------- */
 const BPlotsHandlers = makePlotHandlers("plots");
 const RoadHandlers = makePlotHandlers("road_plots");
 const BuildingHandlers = makePlotHandlers("building_plots");
@@ -243,6 +242,139 @@ const addBuildingPlots = BuildingHandlers.add;
 const editBuildingPlots = BuildingHandlers.edit;
 const deleteBuildingPlots = BuildingHandlers.del;
 
+async function getBurialRecords(req, res, next) {
+  try {
+    // optional pagination: /api/graves?limit=100&offset=0
+    const limit = req.query?.limit ? Number(req.query.limit) : null;
+    const offset = req.query?.offset ? Number(req.query.offset) : null;
+
+    let sql = `SELECT * FROM graves ORDER BY id DESC`;
+    const params = [];
+
+    if (Number.isFinite(limit) && limit > 0) {
+      params.push(limit);
+      sql += ` LIMIT $${params.length}`;
+      if (Number.isFinite(offset) && offset >= 0) {
+        params.push(offset);
+        sql += ` OFFSET $${params.length}`;
+      }
+    }
+
+    const { rows } = await pool.query(sql, params);
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ADD: create a burial record, occupy the plot, generate qr_token
+async function addBurialRecord(req, res, next) {
+  const client = await pool.connect();
+  try {
+    const actor = req.user;
+    if (!actor || !["admin", "super_admin"].includes(actor.role)) {
+      return res.status(403).json({ error: "Forbidden: admin only" });
+    }
+
+    const {
+      plot_id,
+      deceased_name,
+      birth_date,
+      death_date,
+      burial_date,
+      family_contact,
+      headstone_type,
+      memorial_text,
+    } = req.body || {};
+
+    if (!plot_id || !deceased_name) {
+      return res.status(400).json({ error: "plot_id and deceased_name are required" });
+    }
+
+    // fetch plot to get coordinates
+    const plotQ = await pool.query(
+      `SELECT id, ST_X(coordinates) AS lng, ST_Y(coordinates) AS lat
+       FROM plots WHERE id = $1`,
+      [plot_id]
+    );
+    if (plotQ.rows.length === 0) return res.status(404).json({ error: "Plot not found" });
+
+    const { lat, lng } = plotQ.rows[0] || {};
+    const tsIso = new Date().toISOString();
+    // short token that fits varchar(255)
+    // Example: GOP|p:12|lat:14.5995|lng:120.9842|c:2025-09-09T12:34:56.000Z|u:2025-09-09T12:34:56.000Z
+    const qr_token = [
+      "GOP",
+      `p:${plot_id}`,
+      Number.isFinite(lat) ? `lat:${lat}` : undefined,
+      Number.isFinite(lng) ? `lng:${lng}` : undefined,
+      `c:${tsIso}`,
+      `u:${tsIso}`,
+    ]
+      .filter(Boolean)
+      .join("|")
+      .slice(0, 250); // safety margin under 255
+
+    // generate unique 5-char UID for graves
+    const isUidTaken = async (uid) => {
+      const { rows } = await pool.query(`SELECT 1 FROM graves WHERE uid = $1 LIMIT 1`, [uid]);
+      return rows.length > 0;
+    };
+    let uid = null;
+    for (let i = 0; i < 12; i++) {
+      const cand = genUid();
+      // avoid ambiguous characters if you want; keeping your genUid as-is
+      if (!(await isUidTaken(cand))) {
+        uid = cand;
+        break;
+      }
+    }
+    if (!uid) return res.status(500).json({ error: "Failed to generate unique uid" });
+
+    await client.query("BEGIN");
+
+    // mark plot occupied
+    await client.query(
+      `UPDATE plots SET status = 'occupied', updated_at = NOW() WHERE id = $1`,
+      [plot_id]
+    );
+
+    // insert grave
+    const ins = await client.query(
+      `
+      INSERT INTO graves
+        (uid, plot_id, deceased_name, birth_date, death_date, burial_date,
+         family_contact, headstone_type, memorial_text, qr_token, is_active,
+         created_at, updated_at)
+      VALUES
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, TRUE, NOW(), NOW())
+      RETURNING *
+      `,
+      [
+        uid,
+        plot_id,
+        deceased_name,
+        birth_date || null,
+        death_date || null,
+        burial_date || null,
+        family_contact || null,
+        headstone_type || null,
+        memorial_text || null,
+        qr_token,
+      ]
+    );
+
+    await client.query("COMMIT");
+    return res.status(201).json(ins.rows[0]);
+  } catch (err) {
+    try { await client.query("ROLLBACK"); } catch {}
+    next(err);
+  } finally {
+    client.release();
+  }
+}
+
+
 module.exports = {
   dashboardMetrics,
   addPlots,
@@ -256,4 +388,6 @@ module.exports = {
   addBuildingPlots,
   editBuildingPlots,
   deleteBuildingPlots,
+  getBurialRecords,
+  addBurialRecord, 
 };

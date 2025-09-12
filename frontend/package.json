@@ -11,8 +11,11 @@
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.12",
+    "@zxing/browser": "^0.1.5",
     "axios": "^1.11.0",
+    "jsqr": "^1.4.0",
     "leaflet": "^1.9.4",
+    "leaflet-routing-machine": "^3.2.12",
     "lucide-react": "^0.542.0",
     "qr-scanner": "^1.4.2",
     "qrcode": "^1.5.4",
