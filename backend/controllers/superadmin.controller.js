@@ -117,4 +117,54 @@ async function deleteUser(req, res, next) {
   } catch (err) { next(err) }
 }
 
-module.exports = { addUser, users, updateUser, deleteUser }
+async function saveCemeteryInfo(req, res, next) {
+  try {
+    const { name, address, slogan, description } = req.body;
+
+    if (!name || !address) {
+      return res.status(400).json({ success: false, message: 'name and address are required.' });
+    }
+
+    // If you use multer: upload.single('logo') – get file info here
+    // Decide how to store the URL/path. Adjust as needed.
+    let incomingLogoUrl = null;
+    if (req.file) {
+      // Example: put uploaded files under /uploads/logos/<filename>
+      // req.file.path is filesystem path; store a public-facing URL/path your app serves
+      const fname = req.file.filename || '';
+      incomingLogoUrl = `/uploads/logos/${fname}`;
+    }
+
+    // Build params
+    const params = [
+      _trimmed(name),
+      _trimmed(address),
+      _trimmed(slogan || ''),
+      _trimmed(description || ''),
+      incomingLogoUrl,
+    ];
+
+    // Upsert row id=1. If logo not provided, keep existing cemetery_info.logo_url.
+    const sql = `
+      INSERT INTO cemetery_info (id, name, address, slogan, description, logo_url)
+      VALUES (1, $1, $2, $3, $4, $5)
+      ON CONFLICT (id) DO UPDATE
+      SET
+        name = EXCLUDED.name,
+        address = EXCLUDED.address,
+        slogan = EXCLUDED.slogan,
+        description = EXCLUDED.description,
+        logo_url = COALESCE(EXCLUDED.logo_url, cemetery_info.logo_url),
+        updated_at = NOW()
+      RETURNING id, name, address, slogan, description, logo_url, created_at, updated_at
+    `;
+
+    const { rows } = await pool.query(sql, params);
+    return res.json({ success: true, message: 'Cemetery info saved.', data: rows[0] });
+  } catch (err) {
+    next(err);
+  }
+}
+
+
+module.exports = { addUser, users, updateUser, deleteUser, saveCemeteryInfo }

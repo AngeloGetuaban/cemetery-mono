@@ -1,4 +1,3 @@
-// frontend/src/views/admin/pages/BuildingPlots.jsx
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { MapContainer, TileLayer, GeoJSON, Popup } from "react-leaflet";
 import L from "leaflet";
@@ -8,19 +7,49 @@ import ViewModal from "../components/ViewModal";
 import EditModal from "../components/EditModal";
 import AddModal from "../components/AddModal";
 
-import AlertsHost from "../../components/AlertsHost";
-import { showSuccess, showError, confirmWarning } from "../../utitlities/alerts";
+// shadcn/ui
+import { Button } from "../../../components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../../../components/ui/card";
+import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "../../../components/ui/table";
+import { Alert, AlertDescription, AlertTitle } from "../../../components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogFooter,
+  AlertDialogTitle,
+  AlertDialogDescription,
+} from "../../../components/ui/alert-dialog";
+import { Switch } from "../../../components/ui/switch";
+import { Label } from "../../../components/ui/label";
+import { Badge } from "../../../components/ui/badge";
 
-import { editBuildingPlot } from "../js/edit-building-plot";   // <— add file
-import { addBuildingPlot } from "../js/add-building-plot";     // <— add file
+// Sonner
+import { Toaster, toast } from "sonner";
+
+import { editBuildingPlot } from "../js/edit-building-plot";
+import { addBuildingPlot } from "../js/add-building-plot";
 import { getAuth } from "../../../utils/auth";
-import { MapPin, Layers, Tag, Ruler, Crosshair, Plus } from "lucide-react";
+import {
+  MapPin,
+  Layers,
+  Tag,
+  Ruler,
+  Crosshair,
+  Plus,
+  TriangleAlert,
+  Eye,
+  Pencil,
+  Trash2,
+} from "lucide-react";
 
 const API_BASE =
   (typeof import.meta !== "undefined" && import.meta.env?.VITE_API_BASE_URL) || "";
 
 const GEOJSON_URL = `${API_BASE}/plot/building-plots`;
-const DELETE_URL  = (id) => `${API_BASE}/admin/delete-building-plot/${encodeURIComponent(id)}`;
+const DELETE_URL = (id) => `${API_BASE}/admin/delete-building-plot/${encodeURIComponent(id)}`;
 
 /* ---------------- utils ---------------- */
 function centroidOfFeature(feature) {
@@ -38,18 +67,7 @@ function centroidOfFeature(feature) {
   }
 }
 
-/* ---------------- pretty UI helpers (same as RoadPlots) ---------------- */
-const btnBase =
-  "inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-sm font-medium shadow-sm transition focus:outline-none focus:ring-2 focus:ring-offset-2";
-const btnGradGreen =
-  "bg-gradient-to-r from-emerald-500 via-teal-500 to-cyan-500 text-white hover:brightness-95 focus:ring-teal-300";
-const btnGradBlue =
-  "bg-gradient-to-r from-sky-500 via-indigo-500 to-violet-500 text-white hover:brightness-95 focus:ring-indigo-300";
-const btnGradRed =
-  "bg-gradient-to-r from-rose-500 via-red-500 to-orange-500 text-white hover:brightness-95 focus:ring-rose-300";
-const pill =
-  "px-2 py-1 rounded-full text-xs font-semibold ring-1 ring-inset";
-
+/* ---------------- page ---------------- */
 export default function BuildingPlots() {
   const [fc, setFc] = useState(null);
   const [error, setError] = useState(null);
@@ -72,6 +90,15 @@ export default function BuildingPlots() {
   const auth = getAuth();
   const token = auth?.token;
   const authHeader = token ? { Authorization: `Bearer ${token}` } : {};
+
+  // shadcn confirm dialog state
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmPayload, setConfirmPayload] = useState({ title: "", message: "", onConfirm: null });
+
+  function confirmWithAlertDialog({ title, message, onConfirm }) {
+    setConfirmPayload({ title, message, onConfirm });
+    setConfirmOpen(true);
+  }
 
   /* Fetch building plots */
   const fetchPlots = useCallback(async () => {
@@ -96,7 +123,9 @@ export default function BuildingPlots() {
     }
   }, []);
 
-  useEffect(() => { fetchPlots(); }, [fetchPlots]);
+  useEffect(() => {
+    fetchPlots();
+  }, [fetchPlots]);
 
   const rows = useMemo(() => {
     if (!fc?.features) return [];
@@ -158,18 +187,7 @@ export default function BuildingPlots() {
     };
   }, [fc, onlyAvailable]);
 
-  // highlight + popup
   const highlightFeature = hoveredRow?._feature || null;
-  const highlightStyle = {
-    color: "#0ea5e9",
-    weight: 4,
-    opacity: 1,
-    fillOpacity: 0.15,
-    fillColor: "#38bdf8",
-  };
-  const popupRow = hoveredRow || selectedRow || null;
-  const popupPos =
-    popupRow && popupRow.lat != null && popupRow.lng != null ? [popupRow.lat, popupRow.lng] : null;
 
   const onRowClick = (row) => {
     setSelectedRow(row);
@@ -252,11 +270,11 @@ export default function BuildingPlots() {
   const handleEditSubmit = async (payload) => {
     try {
       await editBuildingPlot(payload);
-      showSuccess("Building plot updated successfully.");
+      toast.success("Building plot updated successfully.");
       await fetchPlots();
       setEditOpen(false);
     } catch (err) {
-      showError(err?.message || "Failed to update building plot.");
+      toast.error(err?.message || "Failed to update building plot.");
     }
   };
 
@@ -264,18 +282,17 @@ export default function BuildingPlots() {
   const handleAddSubmit = async (payload) => {
     try {
       await addBuildingPlot(payload);
-      showSuccess("Building plot added successfully.");
+      toast.success("Building plot added successfully.");
       await fetchPlots();
       setAddOpen(false);
     } catch (err) {
-      showError(err?.message || "Failed to add building plot.");
+      toast.error(err?.message || "Failed to add building plot.");
     }
   };
 
   const deletePlotRequest = async (id) => {
     if (!token) {
-      showError("You're not authenticated. Please sign in again.");
-      throw new Error("Missing auth token");
+      throw new Error("You're not authenticated. Please sign in again.");
     }
 
     let res = await fetch(DELETE_URL(id), {
@@ -291,278 +308,300 @@ export default function BuildingPlots() {
     }
     if (!res || !res.ok) {
       if (res && (res.status === 401 || res.status === 403)) {
-        showError("Permission denied. Please sign in with an admin account.");
+        throw new Error("Permission denied. Please sign in with an admin account.");
       }
       const msg = res ? await res.text().catch(() => "") : "Network error";
       throw new Error(msg || "Failed to delete building plot.");
     }
-    try { return await res.json(); } catch { return {}; }
+    try {
+      return await res.json();
+    } catch {
+      return {};
+    }
   };
 
-  const handleDelete = async (row) => {
+  const handleDelete = (row) => {
     const id = row?.id ?? row?._feature?.properties?.id ?? row?._feature?.properties?.uid;
-    if (!id) { showError("Missing plot ID. Cannot delete."); return; }
+    if (!id) {
+      toast.error("Missing plot ID. Cannot delete.");
+      return;
+    }
 
-    const ok = await confirmWarning({
+    confirmWithAlertDialog({
       title: "Delete this building plot?",
       message: "This action cannot be undone. Do you want to proceed?",
-      confirmText: "Delete",
-      cancelText: "Cancel",
+      onConfirm: async () => {
+        try {
+          await deletePlotRequest(id);
+          toast.success("Building plot deleted successfully.");
+          setHoveredRow((h) => (h?.id === id ? null : h));
+          setSelectedRow((s) => (s?.id === id ? null : s));
+          await fetchPlots();
+        } catch (err) {
+          toast.error(err?.message || "Failed to delete building plot.");
+        }
+      },
     });
-    if (!ok) return;
-
-    try {
-      await deletePlotRequest(id);
-      showSuccess("Building plot deleted successfully.");
-      setHoveredRow((h) => (h?.id === id ? null : h));
-      setSelectedRow((s) => (s?.id === id ? null : s));
-      await fetchPlots();
-    } catch (err) {
-      showError(err?.message || "Failed to delete building plot.");
-    }
   };
 
   return (
     <div className="p-6 space-y-4 bg-gradient-to-b from-slate-50 via-white to-slate-50 rounded-2xl">
-      <AlertsHost />
+      {/* sonner toaster */}
+      <Toaster richColors expand={false} />
 
       {/* Header */}
-      <div className="mb-1 flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-800">
-            Building Plots
-          </h1>
-          <p className="text-sm text-slate-500">
-            View, manage, and map building parcels.
-          </p>
-        </div>
-        <div className="hidden sm:flex items-center gap-2">
-          <button className={`${btnBase} ${btnGradGreen}`} onClick={openAdd} title="Add building plot">
-            <Plus size={16} />
-            Add Plot
-          </button>
-        </div>
-      </div>
-
-      {/* Table Card */}
-      <div className="rounded-2xl border border-slate-200/70 bg-white/80 shadow-lg backdrop-blur-sm overflow-hidden">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-4 py-3 border-b border-slate-200/70 bg-gradient-to-r from-slate-50 to-white">
-          <div className="text-sm font-medium text-slate-800">Plots</div>
-
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-slate-600 hidden sm:inline">Only Available</span>
-              <button
-                type="button"
-                onClick={() => { setOnlyAvailable((v) => !v); setHoveredRow(null); setSelectedRow(null); }}
-                className={
-                  "relative inline-flex h-7 w-12 items-center rounded-full shadow-inner transition " +
-                  (onlyAvailable ? "bg-emerald-500/90" : "bg-slate-300")
-                }
-                aria-pressed={onlyAvailable}
-                title="Toggle availability filter"
-              >
-                <span
-                  className={
-                    "inline-block h-6 w-6 transform rounded-full bg-white shadow transition " +
-                    (onlyAvailable ? "translate-x-6" : "translate-x-1")
-                  }
-                />
-              </button>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="text-2xl font-bold">Building Plots</CardTitle>
+              <CardDescription>View, manage, and map building parcels.</CardDescription>
             </div>
-
-            <button className={`sm:hidden ${btnBase} ${btnGradGreen}`} onClick={openAdd}>
-              <Plus size={16} />
-              Add
-            </button>
+            <div className="hidden sm:flex items-center gap-2">
+              <Button onClick={openAdd} size="sm">
+                <Plus className="h-4 w-4 mr-1" />
+                Add Plot
+              </Button>
+            </div>
           </div>
-        </div>
 
-        <div className="max-h-[34vh] overflow-y-auto">
-          <table className="w-full text-left">
-            <thead className="bg-slate-50 sticky top-0 z-10">
-              <tr className="text-slate-600 text-xs uppercase tracking-wide">
-                <th className="px-4 py-3 w-[22%]">Plot Name</th>
-                <th className="px-4 py-3 w-[18%]">Type</th>
-                <th className="px-4 py-3 w-[16%]">Size (sqm)</th>
-                <th className="px-4 py-3 w-[14%]">Status</th>
-                <th className="px-4 py-3 w-[20%]">Coordinates</th>
-                <th className="px-4 py-3 w-[1%] whitespace-nowrap text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="text-sm">
-              {rows.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="px-4 py-8 text-center text-slate-400">No plots to display.</td>
-                </tr>
-              )}
+      {/* Error alert (fetch/load) */}
+      {error && (
+        <Alert variant="destructive" className="border-rose-200">
+          <TriangleAlert className="h-4 w-4" />
+          <AlertTitle>Failed to load building plots</AlertTitle>
+          <AlertDescription className="break-words">{error}</AlertDescription>
+        </Alert>
+      )}
 
-              {rows.map((r, idx) => {
-                const s = (r.status || "").toLowerCase();
-                const badgeCls =
-                  s === "available"
-                    ? `${pill} bg-emerald-50 text-emerald-700 ring-emerald-200`
-                    : s === "reserved"
-                    ? `${pill} bg-amber-50 text-amber-700 ring-amber-200`
-                    : s === "occupied"
-                    ? `${pill} bg-rose-50 text-rose-700 ring-rose-200`
-                    : `${pill} bg-slate-100 text-slate-700 ring-slate-200`;
+      {/* Table */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <div>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-sm">Only Available</span>
+            <Switch
+              checked={onlyAvailable}
+              onCheckedChange={(v) => {
+                setOnlyAvailable(v);
+                setHoveredRow(null);
+                setSelectedRow(null);
+              }}
+            />
+          </div>
+        </CardHeader>
+        <CardContent className="overflow-x-auto">
+          {/* limit height + vertical scroll */}
+          <div className="max-h-[420px] overflow-y-auto rounded-md border border-border">
+            <Table className="min-w-full">
+              {/* sticky header */}
+              <TableHeader className="sticky top-0 z-10 bg-background">
+                <TableRow>
+                  <TableHead className="w-[22%]">Plot Name</TableHead>
+                  <TableHead className="w-[18%]">Type</TableHead>
+                  <TableHead className="w-[16%]">Size (sqm)</TableHead>
+                  <TableHead className="w-[14%]">Status</TableHead>
+                  <TableHead className="w-[20%]">Coordinates</TableHead>
+                  <TableHead className="w-[1%] text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
 
-                return (
-                  <tr
-                    key={r.id ?? `${r.plot_name}-${r.plot_type}-${idx}`}
-                    className="hover:bg-slate-50/80 transition cursor-pointer"
-                    onMouseEnter={() => setHoveredRow(r)}
-                    onMouseLeave={() => setHoveredRow(null)}
-                    onClick={() => onRowClick(r)}
-                  >
-                    <td className="px-4 py-3 text-slate-800">{r.plot_name ?? "-"}</td>
-                    <td className="px-4 py-3 text-slate-700">{r.plot_type ?? "-"}</td>
-                    <td className="px-4 py-3 tabular-nums text-slate-700">{r.size_sqm ?? "-"}</td>
-                    <td className="px-4 py-3"><span className={badgeCls}>{r.status ?? "-"}</span></td>
-                    <td className="px-4 py-3 text-slate-600">
-                      {r.lat != null && r.lng != null ? `${r.lat.toFixed(6)}, ${r.lng.toFixed(6)}` : "—"}
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <div className="inline-flex items-center gap-1.5 sm:gap-2 flex-nowrap whitespace-nowrap">
-                        <button
-                          className={`${btnBase} ${btnGradBlue} !px-2.5 !py-1 text-[12px]`}
-                          onClick={(e) => { e.stopPropagation(); openView(r); }}
-                          title="View"
-                        >
-                          View
-                        </button>
-                        <button
-                          className={`${btnBase} ${btnGradGreen} !px-2.5 !py-1 text-[12px]`}
-                          onClick={(e) => { e.stopPropagation(); openEdit(r); }}
-                          title="Edit"
-                        >
-                          Edit
-                        </button>
-                        <button
-                          className={`${btnBase} ${btnGradRed} !px-2.5 !py-1 text-[12px]`}
-                          onClick={async (e) => { e.stopPropagation(); await handleDelete(r); }}
-                          title="Delete"
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
+              <TableBody>
+                {rows.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={6} className="text-center text-muted-foreground py-6">
+                      No plots to display.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  rows.map((r, idx) => {
+                    const s = (r.status || "").toLowerCase();
+                    const badgeVariant =
+                      s === "available"
+                        ? "success"
+                        : s === "reserved"
+                        ? "warning"
+                        : s === "occupied"
+                        ? "destructive"
+                        : "secondary";
+
+                    return (
+                      <TableRow
+                        key={r.id ?? `${r.plot_name}-${idx}`}
+                        onMouseEnter={() => setHoveredRow(r)}
+                        onMouseLeave={() => setHoveredRow(null)}
+                        onClick={() => onRowClick(r)}
+                        className="cursor-pointer"
+                      >
+                        <TableCell>{r.plot_name ?? "-"}</TableCell>
+                        <TableCell>{r.plot_type ?? "-"}</TableCell>
+                        <TableCell className="tabular-nums">{r.size_sqm ?? "-"}</TableCell>
+                        <TableCell>
+                          <Badge variant={badgeVariant}>{r.status ?? "-"}</Badge>
+                        </TableCell>
+                        <TableCell className="text-muted-foreground">
+                          {r.lat != null && r.lng != null
+                            ? `${r.lat.toFixed(6)}, ${r.lng.toFixed(6)}`
+                            : "—"}
+                        </TableCell>
+                        <TableCell className="text-right space-x-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openView(r);
+                            }}
+                          >
+                            <Eye className="h-4 w-4 mr-1" /> View
+                          </Button>
+                          <Button
+                            size="sm"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openEdit(r);
+                            }}
+                          >
+                            <Pencil className="h-4 w-4 mr-1" /> Edit
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              confirmDelete(r);
+                            }}
+                          >
+                            <Trash2 className="h-4 w-4 mr-1" /> Delete
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Map */}
-      <div
+      <Card
         className={
-          "w-full h-[58vh] rounded-2xl overflow-hidden shadow-xl border border-slate-200/70 bg-white/70 backdrop-blur-sm relative z-0" +
+          "w-full h-[58vh] overflow-hidden border-slate-200/70 relative z-0 " +
           (modalOpen ? " pointer-events-none" : "")
         }
       >
-        {error && (
-          <div className="p-4 text-rose-600 bg-rose-50 border-b border-rose-200">
-            Failed to load building plots: {error}
-          </div>
-        )}
-        <MapContainer
-          center={center}
-          zoom={19}
-          minZoom={16}
-          maxZoom={22}
-          whenCreated={(map) => (mapRef.current = map)}
-          style={{ width: "100%", height: "100%", zIndex: 0 }}
-        >
-          <TileLayer
-            attribution="&copy; OpenStreetMap contributors"
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        <div className="w-full h-full">
+          <MapContainer
+            center={center}
+            zoom={19}
+            minZoom={16}
             maxZoom={22}
-          />
-
-          {filteredFC && (
-            <GeoJSON
-              key={`building-plots-${geoKey}-${onlyAvailable}`}
-              data={filteredFC}
-              style={baseStyle}
-              onEachFeature={onEachFeature}
-              pointToLayer={(feature, latlng) =>
-                L.circleMarker(latlng, {
-                  radius: 6,
-                  weight: 2,
-                  fillOpacity: 0.9,
-                  color: "#3b82f6",
-                })
-              }
+            whenCreated={(map) => (mapRef.current = map)}
+            style={{ width: "100%", height: "100%", zIndex: 0 }}
+          >
+            <TileLayer
+              attribution="&copy; OpenStreetMap contributors"
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              maxZoom={22}
             />
-          )}
 
-          {highlightFeature && (
-            <GeoJSON
-              key={hoveredRow?.id || "hover-highlight"}
-              data={highlightFeature}
-              style={() => highlightStyle}
-              pointToLayer={(feature, latlng) =>
-                L.circleMarker(latlng, {
-                  radius: 10,
-                  weight: highlightStyle.weight,
-                  color: highlightStyle.color,
-                  opacity: highlightStyle.opacity,
-                  fillOpacity: highlightStyle.fillOpacity,
-                })
-              }
-            />
-          )}
+            {filteredFC && (
+              <GeoJSON
+                key={`building-plots-${geoKey}-${onlyAvailable}`}
+                data={filteredFC}
+                style={baseStyle}
+                onEachFeature={onEachFeature}
+                pointToLayer={(feature, latlng) =>
+                  L.circleMarker(latlng, {
+                    radius: 6,
+                    weight: 2,
+                    fillOpacity: 0.9,
+                    color: "#3b82f6",
+                  })
+                }
+              />
+            )}
 
-          {popupRow && popupPos && (
-            <Popup position={popupPos} autoPan={false} closeButton={false}>
-              <div className="min-w-[220px] space-y-1.5 text-[13px]">
-                <div className="flex items-center gap-2">
-                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-slate-600">
-                    <Layers size={14} />
-                  </span>
-                  <span>Type: {popupRow.plot_type ?? "-"}</span>
-                </div>
+            {highlightFeature && (
+              <GeoJSON
+                key={hoveredRow?.id || "hover-highlight"}
+                data={highlightFeature}
+                style={() => ({
+                  color: "#0ea5e9",
+                  weight: 4,
+                  opacity: 1,
+                  fillOpacity: 0.15,
+                  fillColor: "#38bdf8",
+                })}
+                pointToLayer={(feature, latlng) =>
+                  L.circleMarker(latlng, {
+                    radius: 10,
+                    weight: 4,
+                    color: "#0ea5e9",
+                    opacity: 1,
+                    fillOpacity: 0.15,
+                  })
+                }
+              />
+            )}
 
-                <div className="flex items-center gap-2">
-                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-slate-600">
-                    <Tag size={14} />
-                  </span>
-                  <span>Section: {popupRow.plot_name ?? "-"}</span>
-                </div>
+            {(() => {
+              const popupRow = hoveredRow || selectedRow || null;
+              const popupPos =
+                popupRow && popupRow.lat != null && popupRow.lng != null
+                  ? [popupRow.lat, popupRow.lng]
+                  : null;
+              if (!popupRow || !popupPos) return null;
+              return (
+                <Popup position={popupPos} autoPan={false} closeButton={false}>
+                  <div className="min-w-[220px] space-y-1.5 text-[13px]">
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-slate-600">
+                        <Layers size={14} />
+                      </span>
+                      <span>Type: {popupRow.plot_type ?? "-"}</span>
+                    </div>
 
-                <div className="flex items-center gap-2">
-                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-slate-600">
-                    <Ruler size={14} />
-                  </span>
-                  <span>Size: {popupRow.size_sqm ?? "-"} sqm</span>
-                </div>
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-slate-600">
+                        <Tag size={14} />
+                      </span>
+                      <span>Section: {popupRow.plot_name ?? "-"}</span>
+                    </div>
 
-                <div className="flex items-center gap-2">
-                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-slate-600">
-                    <MapPin size={14} />
-                  </span>
-                  <span>
-                    Coords:{" "}
-                    {popupRow.lat != null && popupRow.lng != null
-                      ? `${popupRow.lat.toFixed(6)}, ${popupRow.lng.toFixed(6)}`
-                      : "—"}
-                  </span>
-                </div>
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-slate-600">
+                        <Ruler size={14} />
+                      </span>
+                      <span>Size: {popupRow.size_sqm ?? "-"} sqm</span>
+                    </div>
 
-                <div className="flex items-center gap-2">
-                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-slate-600">
-                    <Crosshair size={14} />
-                  </span>
-                  <span>Status: {popupRow.status ?? "-"}</span>
-                </div>
-              </div>
-            </Popup>
-          )}
-        </MapContainer>
-      </div>
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-slate-600">
+                        <MapPin size={14} />
+                      </span>
+                      <span>
+                        Coords:{" "}
+                        {popupRow.lat != null && popupRow.lng != null
+                          ? `${popupRow.lat.toFixed(6)}, ${popupRow.lng.toFixed(6)}`
+                          : "—"}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-slate-600">
+                        <Crosshair size={14} />
+                      </span>
+                      <span>Status: {popupRow.status ?? "-"}</span>
+                    </div>
+                  </div>
+                </Popup>
+              );
+            })()}
+          </MapContainer>
+        </div>
+      </Card>
 
       {/* Modals */}
       <ViewModal open={viewOpen} onClose={() => setViewOpen(false)} data={modalRow} />
@@ -580,6 +619,29 @@ export default function BuildingPlots() {
         onSubmit={handleAddSubmit}
         title="Add New Building Plot"
       />
+
+      {/* Confirm Delete (shadcn AlertDialog) */}
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{confirmPayload.title}</AlertDialogTitle>
+            <AlertDialogDescription>{confirmPayload.message}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setConfirmOpen(false)}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={async () => {
+                const done = confirmPayload.onConfirm;
+                setConfirmOpen(false);
+                if (typeof done === "function") await done();
+              }}
+              className="bg-red-600 hover:bg-red-700"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

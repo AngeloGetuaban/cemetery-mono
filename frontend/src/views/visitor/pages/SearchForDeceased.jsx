@@ -2,8 +2,22 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { NavLink } from "react-router-dom";
 import fetchBurialRecords from "../js/get-burial-records";
+
 import "leaflet/dist/leaflet.css";
-import "leaflet-routing-machine/dist/leaflet-routing-machine.css"; // <-- add this
+import "leaflet-routing-machine/dist/leaflet-routing-machine.css";
+
+// shadcn/ui (only components you actually have)
+import { Button } from "../../../components/ui/button";
+import { Input } from "../../../components/ui/input";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../../../components/ui/card";
+import { Separator } from "../../../components/ui/separator";
+import {
+  Table, TableHeader, TableRow, TableHead, TableBody, TableCell,
+} from "../../../components/ui/table";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
+} from "../../../components/ui/dialog";
+import { Avatar, AvatarFallback } from "../../../components/ui/avatar";
 
 function formatDate(s) {
   if (!s) return "—";
@@ -15,18 +29,21 @@ function formatDate(s) {
 function parseLatLngFromToken(token) {
   if (!token) return null;
   const t = String(token);
+
   const mKVLat = t.match(/(?:^|\|)lat:([+-]?\d+(?:\.\d+)?)(?:\||$)/i);
   const mKVLng = t.match(/(?:^|\|)lng:([+-]?\d+(?:\.\d+)?)(?:\||$)/i);
   if (mKVLat && mKVLng) {
     const lat = Number(mKVLat[1]); const lng = Number(mKVLng[1]);
     if (Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng };
   }
+
   const mUrlLat = t.match(/[?&]lat=([+-]?\d+(?:\.\d+)?)/i);
   const mUrlLng = t.match(/[?&]lng=([+-]?\d+(?:\.\d+)?)/i);
   if (mUrlLat && mUrlLng) {
     const lat = Number(mUrlLat[1]); const lng = Number(mUrlLng[1]);
     if (Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng };
   }
+
   const mPoint = t.match(/POINT\s*\(\s*([+-]?\d+(?:\.\d+)?)\s+([+-]?\d+(?:\.\d+)?)\s*\)/i);
   if (mPoint) {
     const lng = Number(mPoint[1]); const lat = Number(mPoint[2]);
@@ -52,12 +69,12 @@ export default function SearchForDeceased() {
     L: null,
     map: null,
     marker: null,
-    routing: null,          // <-- keep routing control
-    routingLoaded: false,   // <-- flag for dynamic import
+    routing: null,
+    routingLoaded: false,
   });
 
   // fixed starting point for route
-  const START = { lat: 15.4953425, lng: 120.5560590 }; 
+  const START = { lat: 15.4953425, lng: 120.556059 };
 
   // modal state
   const [scanModalOpen, setScanModalOpen] = useState(false);
@@ -167,63 +184,49 @@ export default function SearchForDeceased() {
     if (!file) return;
     setScanErr("");
     setScanMode("upload");
-  
-    // Create an HTMLImageElement and an ImageBitmap (crisper for detectors)
+
     const url = URL.createObjectURL(file);
     const cleanup = () => URL.revokeObjectURL(url);
-  
+
     try {
       const img = await new Promise((resolve, reject) => {
         const el = new Image();
         el.onload = () => resolve(el);
         el.onerror = () => reject(new Error("Could not load image."));
-        el.src = url; // blob is same-origin, safe for canvas
+        el.src = url;
       });
-  
-      // Small helper to try BarcodeDetector across rotations & (optionally) scale
+
       const tryBarcodeDetector = async (source) => {
         if (!("BarcodeDetector" in window)) return null;
-  
-        // Some browsers expose the API but not the format; check it
         try {
           const supported = await window.BarcodeDetector.getSupportedFormats?.();
           if (Array.isArray(supported) && !supported.includes("qr_code")) return null;
-        } catch {
-          // ignore and try anyway
-        }
-  
+        } catch {}
         const det = new window.BarcodeDetector({ formats: ["qr_code"] });
-  
-        // Build a function that returns an ImageBitmap or Canvas for a given rotation & scale
+
         const buildCanvas = (el, rotationDeg = 0, scale = 1) => {
           const w = (el.naturalWidth || el.width) * scale;
           const h = (el.naturalHeight || el.height) * scale;
           const canvas = document.createElement("canvas");
-  
-          // Swap w/h for 90/270 rotations
           const rot = ((rotationDeg % 360) + 360) % 360;
           const cw = rot === 90 || rot === 270 ? h : w;
           const ch = rot === 90 || rot === 270 ? w : h;
-  
           canvas.width = cw;
           canvas.height = ch;
           const ctx = canvas.getContext("2d");
           ctx.imageSmoothingEnabled = false;
-  
           ctx.translate(cw / 2, ch / 2);
           ctx.rotate((rot * Math.PI) / 180);
           ctx.drawImage(el, -w / 2, -h / 2, w, h);
           return canvas;
         };
-  
-        // Try original image element first
+
         try {
           const codes = await det.detect(source);
           if (codes && codes.length) return codes[0].rawValue || null;
         } catch {}
-  
-        // Try a couple of scales & rotations on a canvas
-        const scales = [1.5, 2];            // upscales help low-res screenshots
+
+        const scales = [1.5, 2];
         const rotations = [0, 90, 180, 270];
         for (const s of scales) {
           for (const r of rotations) {
@@ -236,16 +239,14 @@ export default function SearchForDeceased() {
         }
         return null;
       };
-  
-      // 1) BarcodeDetector on <img> / canvases / rotations
+
       const bdValue = await tryBarcodeDetector(img);
       if (bdValue) {
         handleQrFound(bdValue);
         cleanup();
         return;
       }
-  
-      // 2) ZXing on the actual <img> element (more reliable than decodeFromImageUrl for blobs)
+
       try {
         const { BrowserQRCodeReader } = await import("@zxing/browser");
         const zxing = new BrowserQRCodeReader();
@@ -255,19 +256,13 @@ export default function SearchForDeceased() {
           cleanup();
           return;
         }
-      } catch {
-        // keep falling through
-      }
-  
-      // 3) jsQR on raw pixels with simple pre-processing + rotations
+      } catch {}
+
       try {
         const jsqr = (await import("jsqr")).default;
-  
         const scanWithJsQR = (canvas, invert = false, threshold = false) => {
           const ctx = canvas.getContext("2d", { willReadFrequently: true });
           let imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  
-          // Optional: invert colors
           if (invert) {
             const d = imgData.data;
             for (let i = 0; i < d.length; i += 4) {
@@ -276,8 +271,6 @@ export default function SearchForDeceased() {
               d[i + 2] = 255 - d[i + 2];
             }
           }
-  
-          // Optional: quick threshold to boost contrast
           if (threshold) {
             const d = imgData.data;
             for (let i = 0; i < d.length; i += 4) {
@@ -286,27 +279,19 @@ export default function SearchForDeceased() {
               d[i] = d[i + 1] = d[i + 2] = t;
             }
           }
-  
-          // Put back (only needed after changes)
           if (invert || threshold) ctx.putImageData(imgData, 0, 0);
-  
-          const code = jsqr(imgData.data, canvas.width, canvas.height, {
-            inversionAttempts: "attemptBoth",
-          });
+          const code = jsqr(imgData.data, canvas.width, canvas.height, { inversionAttempts: "attemptBoth" });
           return code?.data || null;
         };
-  
-        const makeCanvas = (el, rot = 0, scale = 1.5) => {
+
+        const makeCanvas = (el, rot = 0, scale = 2) => {
           const w = (el.naturalWidth || el.width) * scale;
           const h = (el.naturalHeight || el.height) * scale;
           const rotNorm = ((rot % 360) + 360) % 360;
-  
           const cw = rotNorm === 90 || rotNorm === 270 ? h : w;
           const ch = rotNorm === 90 || rotNorm === 270 ? w : h;
-  
           const c = document.createElement("canvas");
-          c.width = cw;
-          c.height = ch;
+          c.width = cw; c.height = ch;
           const ctx = c.getContext("2d");
           ctx.imageSmoothingEnabled = false;
           ctx.translate(cw / 2, ch / 2);
@@ -314,7 +299,7 @@ export default function SearchForDeceased() {
           ctx.drawImage(el, -w / 2, -h / 2, w, h);
           return c;
         };
-  
+
         const rotations = [0, 90, 180, 270];
         const toggles = [
           { invert: false, threshold: false },
@@ -333,10 +318,8 @@ export default function SearchForDeceased() {
             }
           }
         }
-      } catch {
-        // ignore and fall through
-      }
-  
+      } catch {}
+
       setScanErr("No QR code detected in the image.");
     } catch (e) {
       setScanErr(e?.message || "Failed to decode QR image.");
@@ -344,7 +327,6 @@ export default function SearchForDeceased() {
       cleanup();
     }
   }
-  
 
   function handleQrFound(text) {
     stopCamera();
@@ -365,7 +347,6 @@ export default function SearchForDeceased() {
     const L = leafletRef.current.L;
     if (!mapRef.current) return;
 
-    // Create map if needed
     if (!leafletRef.current.map) {
       leafletRef.current.map = L.map(mapRef.current).setView([coords.lat, coords.lng], 18);
       L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -374,29 +355,23 @@ export default function SearchForDeceased() {
       }).addTo(leafletRef.current.map);
     }
 
-    // Destination marker
     if (leafletRef.current.marker) {
       leafletRef.current.marker.setLatLng([coords.lat, coords.lng]);
     } else {
       leafletRef.current.marker = L.marker([coords.lat, coords.lng]).addTo(leafletRef.current.map);
     }
 
-    // Load routing plugin once then create/update control
     if (!leafletRef.current.routingLoaded) {
       await import("leaflet-routing-machine");
       leafletRef.current.routingLoaded = true;
     }
 
-    // Build OSRM router (public demo server)
     const router = L.Routing.osrmv1({
       serviceUrl: "https://router.project-osrm.org/route/v1",
-      profile: "foot", // or 'car' / 'driving'
+      profile: "foot",
     });
 
-    const waypoints = [
-      L.latLng(START.lat, START.lng),      // start (fixed)
-      L.latLng(coords.lat, coords.lng),    // destination from QR
-    ];
+    const waypoints = [L.latLng(START.lat, START.lng), L.latLng(coords.lat, coords.lng)];
 
     if (!leafletRef.current.routing) {
       leafletRef.current.routing = L.Routing.control({
@@ -405,22 +380,19 @@ export default function SearchForDeceased() {
         routeWhileDragging: false,
         addWaypoints: false,
         draggableWaypoints: false,
-        fitSelectedRoutes: false, // we’ll fit manually on routesfound
-        show: false,              // hide the default panel UI
-        lineOptions: {
-          styles: [{ color: "#059669", weight: 6, opacity: 0.9 }], // emerald
-        },
-        createMarker: () => null, // don't add extra routing markers
+        fitSelectedRoutes: false,
+        show: false,
+        lineOptions: { styles: [{ color: "#059669", weight: 6, opacity: 0.9 }] },
+        createMarker: () => null,
       })
-      .addTo(leafletRef.current.map)
-      .on("routesfound", (e) => {
-        // Fit bounds so the whole route is visible
-        const route = e.routes?.[0];
-        if (route?.coordinates?.length) {
-          const bounds = L.latLngBounds(route.coordinates);
-          leafletRef.current.map.fitBounds(bounds, { padding: [24, 24] });
-        }
-      });
+        .addTo(leafletRef.current.map)
+        .on("routesfound", (e) => {
+          const route = e.routes?.[0];
+          if (route?.coordinates?.length) {
+            const bounds = L.latLngBounds(route.coordinates);
+            leafletRef.current.map.fitBounds(bounds, { padding: [24, 24] });
+          }
+        });
     } else {
       leafletRef.current.routing.setWaypoints(waypoints);
     }
@@ -428,6 +400,7 @@ export default function SearchForDeceased() {
 
   return (
     <div className="min-h-screen bg-slate-50 font-poppins">
+      {/* Page header */}
       <section className="pt-24 pb-8">
         <div className="mx-auto w-full max-w-7xl px-6 lg:px-8">
           <div className="mb-2 text-sm text-slate-500">
@@ -435,90 +408,134 @@ export default function SearchForDeceased() {
             &nbsp;›&nbsp;<span className="text-slate-700">Search For Deceased</span>
           </div>
 
-          <div className="rounded-2xl bg-white shadow-sm border border-slate-200 p-6 lg:p-8">
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-              <div>
-                <h1 className="text-2xl sm:text-3xl font-bold text-slate-900">Search For Deceased</h1>
-                <p className="mt-2 text-slate-600">Find loved ones by plot ID or name. Live data from the system.</p>
+          <Card className="border-slate-200">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-2xl sm:text-3xl">Search For Deceased</CardTitle>
+              <CardDescription>Find loved ones by plot ID or name. Live data from the system.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                <div className="flex items-center gap-3">
+                  <Avatar className="h-9 w-9">
+                    <AvatarFallback className="bg-emerald-100 text-emerald-700 font-semibold">GP</AvatarFallback>
+                  </Avatar>
+                  <div className="text-sm text-slate-600">
+                    Garden of Peace Cemetery
+                  </div>
+                </div>
+                <div className="w-full sm:w-80">
+                  {/* no Label import; using native label if needed */}
+                  <div className="relative">
+                    <Input
+                      id="q"
+                      value={q}
+                      onChange={(e) => { setQ(e.target.value); setPage(1); }}
+                      placeholder="Search plot, name, birth or death date…"
+                      className="pr-10"
+                    />
+                    <svg
+                      className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M21 21l-4.35-4.35m.6-5.4a6 6 0 11-12 0 6 6 0 0112 0z" />
+                    </svg>
+                  </div>
+                </div>
               </div>
-              <div className="relative">
-                <input
-                  value={q}
-                  onChange={(e) => { setQ(e.target.value); setPage(1); }}
-                  placeholder="Search plot, name, birth or death date…"
-                  className="w-full sm:w-80 rounded-xl border border-slate-300 bg-white/70 px-4 py-2.5 pr-10 text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-4 focus:ring-emerald-100 focus:border-emerald-400"
-                />
-                <svg className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M21 21l-4.35-4.35m.6-5.4a6 6 0 11-12 0 6 6 0 0112 0z" />
-                </svg>
-              </div>
-            </div>
-          </div>
+            </CardContent>
+          </Card>
         </div>
       </section>
 
-      {/* table */}
+      {/* Results */}
       <section className="pb-10">
         <div className="mx-auto w-full max-w-7xl px-6 lg:px-8">
-          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-sm">
-                <thead className="bg-slate-50 border-b border-slate-200">
-                  <tr>
-                    <th className="text-left font-semibold text-slate-700 px-5 py-3">Plot ID</th>
-                    <th className="text-left font-semibold text-slate-700 px-5 py-3">Name</th>
-                    <th className="text-left font-semibold text-slate-700 px-5 py-3">Birth Date</th>
-                    <th className="text-left font-semibold text-slate-700 px-5 py-3">Death Date</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {loading && (<tr><td colSpan={4} className="px-5 py-10 text-center text-slate-500">Loading…</td></tr>)}
-                  {error && (<tr><td colSpan={4} className="px-5 py-10 text-center text-rose-600">{error}</td></tr>)}
-                  {!loading && !error && pageRows.length === 0 && (<tr><td colSpan={4} className="px-5 py-10 text-center text-slate-500">No records found.</td></tr>)}
+          <Card className="overflow-hidden border-slate-200">
+            <CardContent className="p-0">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Plot ID</TableHead>
+                    <TableHead>Name</TableHead>
+                    <TableHead>Birth Date</TableHead>
+                    <TableHead>Death Date</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {loading && (
+                    <TableRow>
+                      <TableCell colSpan={4} className="text-center text-slate-500 py-10">
+                        Loading…
+                      </TableCell>
+                    </TableRow>
+                  )}
+                  {error && (
+                    <TableRow>
+                      <TableCell colSpan={4} className="text-center text-rose-600 py-10">
+                        {error}
+                      </TableCell>
+                    </TableRow>
+                  )}
+                  {!loading && !error && pageRows.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={4} className="text-center text-slate-500 py-10">
+                        No records found.
+                      </TableCell>
+                    </TableRow>
+                  )}
                   {pageRows.map((row) => (
-                    <tr key={row.id} className="hover:bg-emerald-50/40 transition-colors">
-                      <td className="px-5 py-3 text-slate-800">{row.plot_id}</td>
-                      <td className="px-5 py-3 font-medium text-slate-900">{row.deceased_name || "—"}</td>
-                      <td className="px-5 py-3 text-slate-700">{formatDate(row.birth_date)}</td>
-                      <td className="px-5 py-3 text-slate-700">{formatDate(row.death_date)}</td>
-                    </tr>
+                    <TableRow key={row.id} className="hover:bg-emerald-50/40">
+                      <TableCell className="text-slate-800">{row.plot_id}</TableCell>
+                      <TableCell className="font-medium text-slate-900">{row.deceased_name || "—"}</TableCell>
+                      <TableCell className="text-slate-700">{formatDate(row.birth_date)}</TableCell>
+                      <TableCell className="text-slate-700">{formatDate(row.death_date)}</TableCell>
+                    </TableRow>
                   ))}
-                </tbody>
-              </table>
-            </div>
+                </TableBody>
+              </Table>
 
-            {/* pagination */}
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-5 py-4 border-t border-slate-200 bg-white text-sm">
-              <div className="text-slate-600">
-                Showing <strong>{from}</strong>–<strong>{to}</strong> of <strong>{total}</strong> result{total !== 1 ? "s" : ""}.
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setPage((p) => Math.max(1, p - 1))}
-                  disabled={page === 1}
-                  className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-slate-700 disabled:opacity-50 hover:bg-slate-50"
-                  aria-label="Previous"
-                >◀</button>
-                <span className="text-slate-600">Page <strong>{page}</strong> of <strong>{totalPages}</strong></span>
-                <button
-                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                  disabled={page === totalPages}
-                  className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-slate-700 disabled:opacity-50 hover:bg-slate-50"
-                  aria-label="Next"
-                >▶</button>
-              </div>
-            </div>
-          </div>
+              <Separator />
 
-          {/* OR */}
+              {/* Pagination */}
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-5 py-4 text-sm">
+                <div className="text-slate-600">
+                  Showing <strong>{from}</strong>–<strong>{to}</strong> of <strong>{total}</strong> result{total !== 1 ? "s" : ""}.
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    disabled={page === 1}
+                    aria-label="Previous"
+                  >
+                    ◀
+                  </Button>
+                  <span className="text-slate-600">
+                    Page <strong>{page}</strong> of <strong>{totalPages}</strong>
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                    disabled={page === totalPages}
+                    aria-label="Next"
+                  >
+                    ▶
+                  </Button>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
           <div className="text-center text-slate-400 font-medium my-6">OR</div>
+
           <div className="flex justify-center">
-            <button
-              onClick={() => { setScanModalOpen(true); setScanMode("choose"); setScanErr(""); }}
-              className="rounded-xl bg-slate-800 text-white px-5 py-3 hover:bg-slate-900 shadow-sm"
-            >
+            <Button onClick={() => { setScanModalOpen(true); setScanMode("choose"); setScanErr(""); }} size="lg">
               Scan a QR Code
-            </button>
+            </Button>
           </div>
         </div>
       </section>
@@ -527,98 +544,108 @@ export default function SearchForDeceased() {
       {scanResult && (
         <section className="pb-6">
           <div className="mx-auto w-full max-w-7xl px-6 lg:px-8 space-y-4">
-            <div className="rounded-xl border border-slate-200 bg-white p-4">
-              <div className="text-sm text-slate-600 break-all">
-                <span className="font-semibold">QR:</span> {scanResult.token}
-              </div>
-            </div>
+            <Card>
+              <CardContent className="p-4">
+                <div className="text-sm text-slate-600 break-all">
+                  <span className="font-semibold">QR:</span> {scanResult.token}
+                </div>
+              </CardContent>
+            </Card>
+
             {scanResult.coords ? (
               <>
-                <div ref={mapRef} className="w-full h-[420px] rounded-xl overflow-hidden ring-1 ring-slate-200" />
+                <Card className="overflow-hidden">
+                  <div ref={mapRef} className="w-full h-[420px]" />
+                </Card>
                 <div className="text-center">
-                  <button
-                    onClick={() => { setScanResult(null); setScanModalOpen(true); setScanMode("choose"); }}
-                    className="rounded-xl bg-emerald-600 text-white px-5 py-3 hover:bg-emerald-700"
-                  >
+                  <Button onClick={() => { setScanResult(null); setScanModalOpen(true); setScanMode("choose"); }}>
                     Scan another QR Code
-                  </button>
+                  </Button>
                 </div>
               </>
             ) : (
-              <div className="text-center">
-                <p className="text-slate-600 mb-3">This QR does not include coordinates.</p>
-                <button
-                  onClick={() => { setScanResult(null); setScanModalOpen(true); setScanMode("choose"); }}
-                  className="rounded-xl bg-emerald-600 text-white px-5 py-3 hover:bg-emerald-700"
-                >
-                  Scan another QR Code
-                </button>
-              </div>
+              <Card>
+                <CardContent className="p-6 text-center">
+                  <p className="text-slate-600 mb-3">This QR does not include coordinates.</p>
+                  <Button onClick={() => { setScanResult(null); setScanModalOpen(true); setScanMode("choose"); }}>
+                    Scan another QR Code
+                  </Button>
+                </CardContent>
+              </Card>
             )}
           </div>
         </section>
       )}
 
-      {/* Scan Modal */}
-      {scanModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center bg-black/40 p-3 md:p-6" onClick={closeScanModal}>
-          <div className="w-full max-w-2xl rounded-2xl bg-white shadow-xl ring-1 ring-slate-200" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
-              <h3 className="text-lg font-semibold text-slate-800">Scan a QR Code</h3>
-              <button onClick={closeScanModal} className="rounded-full p-2 hover:bg-slate-100" aria-label="Close">
-                <svg className="w-5 h-5 text-slate-600" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg>
-              </button>
+      {/* Scan Modal (shadcn Dialog) */}
+      <Dialog open={scanModalOpen} onOpenChange={(o) => (o ? setScanModalOpen(true) : closeScanModal())}>
+        <DialogContent className="sm:max-w-2xl" onInteractOutside={(e) => e.preventDefault()}>
+          <DialogHeader>
+            <DialogTitle>Scan a QR Code</DialogTitle>
+            <DialogDescription>Use your camera or upload a QR image to locate a grave on the map.</DialogDescription>
+          </DialogHeader>
+
+          {scanMode === "choose" && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <Button onClick={startCamera}>Open Camera</Button>
+
+              <div className="flex items-center justify-center">
+                {/* native label styled like shadcn button */}
+                <label
+                  htmlFor="qr-upload"
+                  className="w-full cursor-pointer rounded-md border border-input bg-background px-4 py-2.5 text-center text-sm font-medium hover:bg-accent hover:text-accent-foreground"
+                >
+                  Upload QR Image
+                </label>
+                <input
+                  id="qr-upload"
+                  ref={fileRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onClick={(e) => { e.currentTarget.value = ""; }}
+                  onChange={(e) => handleUploadFile(e.target.files?.[0] || null)}
+                />
+              </div>
             </div>
+          )}
 
-            <div className="px-6 py-5 space-y-4">
-              {scanMode === "choose" && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <button
-                    onClick={startCamera}
-                    className="rounded-xl bg-slate-800 text-white px-4 py-3 hover:bg-slate-900"
-                  >
-                    Open Camera
-                  </button>
+          {scanMode === "camera" && (
+            <div className="space-y-3">
+              <div className="rounded-lg overflow-hidden border">
+                <div className="w-full aspect-video bg-muted/40">
+                  <video ref={videoRef} className="w-full h-full object-cover" muted playsInline />
+                </div>
+              </div>
 
-                  <label className="rounded-xl border border-slate-300 px-4 py-3 text-slate-700 hover:bg-slate-50 cursor-pointer text-center">
-                    Upload QR Image
-                    <input
-                      ref={fileRef}
-                      type="file"
-                      accept="image/*"
-                      className="hidden"
-                      onClick={(e) => { e.currentTarget.value = ""; }}
-                      onChange={(e) => handleUploadFile(e.target.files?.[0] || null)}
-                    />
-                  </label>
+              {scanErr && (
+                <div className="rounded-md border border-rose-200 bg-rose-50 text-rose-700 px-3 py-2 text-sm">
+                  {scanErr}
                 </div>
               )}
 
-              {scanMode === "camera" && (
-                <div className="space-y-3">
-                  <div className="rounded-2xl overflow-hidden ring-1 ring-slate-200 bg-black/5 w-full aspect-video">
-                    <video ref={videoRef} className="w-full h-full object-cover" muted playsInline />
-                  </div>
-                  <div className="flex justify-end gap-2">
-                    <button onClick={() => { stopCamera(); setScanMode("choose"); }} className="rounded-xl border border-slate-300 px-4 py-2.5 text-slate-700 hover:bg-slate-50">Back</button>
-                    <button onClick={closeScanModal} className="rounded-xl bg-slate-800 text-white px-4 py-2.5 hover:bg-slate-900">Close</button>
-                  </div>
-                </div>
-              )}
-
-              {scanMode === "upload" && (
-                <div className="text-sm text-slate-600">
-                  Processing image… {scanErr && <span className="text-rose-600 font-medium ml-2">{scanErr}</span>}
-                </div>
-              )}
-
-              {scanErr && scanMode !== "upload" && (
-                <div className="rounded-lg border border-rose-200 bg-rose-50 text-rose-700 px-4 py-3 text-sm">{scanErr}</div>
-              )}
+              <DialogFooter className="gap-2 sm:gap-0">
+                <Button variant="outline" onClick={() => { stopCamera(); setScanMode("choose"); }}>
+                  Back
+                </Button>
+                <Button onClick={closeScanModal}>Close</Button>
+              </DialogFooter>
             </div>
-          </div>
-        </div>
-      )}
+          )}
+
+          {scanMode === "upload" && (
+            <div className="text-sm text-slate-600">
+              Processing image… {scanErr && <span className="text-rose-600 font-medium ml-2">{scanErr}</span>}
+            </div>
+          )}
+
+          {scanErr && scanMode !== "upload" && scanMode !== "camera" && (
+            <div className="rounded-md border border-rose-200 bg-rose-50 text-rose-700 px-3 py-2 text-sm">
+              {scanErr}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

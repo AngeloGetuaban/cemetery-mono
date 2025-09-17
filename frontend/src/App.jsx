@@ -15,12 +15,11 @@ const VisitorHome = lazy(() => import("./views/visitor/pages/Home"));
 const VisitorLogin = lazy(() => import("./views/login/Login"));
 const VisitorSet  = lazy(() => import("./views/visitor/pages/Settings"));
 
-const SuperAdminDash = lazy(() => import("./views/superadmin/pages/Dashboard"));
 const SuperAdminAdmin = lazy(() => import("./views/superadmin/pages/Admin"));
 const SuperAdminStaff = lazy(() => import("./views/superadmin/pages/Staff"));
 const SuperAdminVisitor = lazy(() => import("./views/superadmin/pages/Visitor"));
 import AlertsHost from "./views/components/AlertsHost";
-import CemeterySetup from "./views/admin/pages/CemeterySetup";
+import CemeterySetup from "./views/superadmin/pages/CemeterySetup";
 import BurialPlots from "./views/admin/pages/BurialPlots";
 import BurialRecords from "./views/admin/pages/BurialRecords";
 import RoadPlots from "./views/admin/pages/RoadPlots";
@@ -69,7 +68,6 @@ export default function App() {
                 <RoleLayout base="/admin">
                   <Routes>
                     <Route path="dashboard" element={<AdminDash />} />
-                    <Route path="setup" element={<CemeterySetup />} />
                     <Route path="plots" element={<BurialPlots />} />
                     <Route path="road-plots" element={<RoadPlots />} />
                     <Route path="building-plots" element={<BuildingPlots />} />
@@ -89,7 +87,7 @@ export default function App() {
               element={
                 <RoleLayout base="/superadmin">
                   <Routes>
-                    <Route path="dashboard" element={<SuperAdminDash />} />
+                    <Route path="setup" element={<CemeterySetup />} />
                     <Route path="/admin" element={<SuperAdminAdmin />} />
                     <Route path="/staff" element={<SuperAdminStaff />} />
                     <Route path="/visitor" element={<SuperAdminVisitor />} />

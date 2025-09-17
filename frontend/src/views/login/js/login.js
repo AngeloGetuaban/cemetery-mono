@@ -1,7 +1,7 @@
 function routeForRole(role) {
     switch (role) {
-      case 'super_admin': return '/superadmin/dashboard';
-      case 'admin':       return '/admin/dashboard';
+      case 'super_admin': return '/superadmin/setup';
+      case 'admin':       return '/admin/plots';
       case 'staff':       return '/staff/dashboard/';
       default:            return '/visitor/home';
     }

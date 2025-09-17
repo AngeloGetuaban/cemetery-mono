@@ -4,17 +4,66 @@ import { MapContainer, TileLayer, GeoJSON, Popup } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
-import ViewModal from "../components/ViewModal";
-import EditModal from "../components/EditModal";
-import AddModal from "../components/AddModal";
-
-import AlertsHost from "../../components/AlertsHost";
-import { showSuccess, showError, confirmWarning } from "../../utitlities/alerts";
-
+import { getAuth } from "../../../utils/auth";
 import { editPlot } from "../js/edit-plot";
 import { addPlot } from "../js/add-plot";
-import { getAuth } from "../../../utils/auth";
-import { MapPin, Layers, Tag, Ruler, Crosshair, Plus, Trash2 } from "lucide-react";
+
+import {
+  MapPin,
+  Layers,
+  Tag,
+  Ruler,
+  Crosshair,
+  Plus,
+  Eye,
+  Pencil,
+  Trash2,
+  TriangleAlert,
+} from "lucide-react";
+
+// shadcn/ui primitives
+import { Button } from "../../../components/ui/button";
+import {
+  Card,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+  CardContent,
+} from "../../../components/ui/card";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../../../components/ui/table";
+import { Switch } from "../../../components/ui/switch";
+import { Badge } from "../../../components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "../../../components/ui/dialog";
+import { Input } from "../../../components/ui/input";
+import { Label } from "../../../components/ui/label";
+import { Alert, AlertTitle, AlertDescription } from "../../../components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogFooter,
+  AlertDialogTitle,
+  AlertDialogDescription,
+} from "../../../components/ui/alert-dialog";
+
+// shadcn sonner toasts
+import { Toaster, toast } from "sonner";
 
 const API_BASE =
   (typeof import.meta !== "undefined" && import.meta.env?.VITE_API_BASE_URL) || "";
@@ -35,44 +84,35 @@ function centroidOfFeature(feature) {
   }
 }
 
-/* ---------------- pretty UI helpers ---------------- */
-const btnBase =
-  "inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-sm font-medium shadow-sm transition focus:outline-none focus:ring-2 focus:ring-offset-2";
-const btnGradGreen =
-  "bg-gradient-to-r from-emerald-500 via-teal-500 to-cyan-500 text-white hover:brightness-95 focus:ring-teal-300";
-const btnGradBlue =
-  "bg-gradient-to-r from-sky-500 via-indigo-500 to-violet-500 text-white hover:brightness-95 focus:ring-indigo-300";
-const btnGradRed =
-  "bg-gradient-to-r from-rose-500 via-red-500 to-orange-500 text-white hover:brightness-95 focus:ring-rose-300";
-const pill =
-  "px-2 py-1 rounded-full text-xs font-semibold ring-1 ring-inset";
-
 export default function BurialPlots() {
   const [fc, setFc] = useState(null);
   const [error, setError] = useState(null);
   const [onlyAvailable, setOnlyAvailable] = useState(true);
 
-  // hover / selection (map + popup)
   const [hoveredRow, setHoveredRow] = useState(null);
   const [selectedRow, setSelectedRow] = useState(null);
 
-  // modals
+  // dialogs (view/edit/add)
   const [viewOpen, setViewOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [modalRow, setModalRow] = useState(null);
-  const modalOpen = viewOpen || editOpen || addOpen;
+
+  // delete confirm
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmId, setConfirmId] = useState(null);
+
+  // geojson remount key
   const [geoKey, setGeoKey] = useState(0);
 
   const mapRef = useRef(null);
-
   const center = useMemo(() => [15.49492, 120.55533], []);
 
   const auth = getAuth();
   const token = auth?.token;
   const authHeader = token ? { Authorization: `Bearer ${token}` } : {};
 
-  /* Fetch plots (reusable) */
+  /* Fetch plots */
   const fetchPlots = useCallback(async () => {
     try {
       setError(null);
@@ -84,8 +124,6 @@ export default function BurialPlots() {
       }
       const json = await res.json();
       setFc(json);
-
-      // FORCE GeoJSON remount + clean up map UI
       setGeoKey((k) => k + 1);
       setHoveredRow(null);
       setSelectedRow(null);
@@ -109,13 +147,7 @@ export default function BurialPlots() {
       })
       .map((f) => {
         const p = f.properties || {};
-        let lat = null,
-          lng = null;
         const c = centroidOfFeature(f);
-        if (c) {
-          lat = c[0];
-          lng = c[1];
-        }
         const idRaw = p.id ?? p.uid;
         return {
           id: idRaw != null ? String(idRaw) : undefined,
@@ -123,8 +155,8 @@ export default function BurialPlots() {
           plot_type: p.plot_type,
           size_sqm: p.size_sqm,
           status: p.status,
-          lat,
-          lng,
+          lat: c ? c[0] : null,
+          lng: c ? c[1] : null,
           _feature: f,
         };
       });
@@ -140,19 +172,6 @@ export default function BurialPlots() {
     return { color: "#3b82f6", weight: 2.5, fillOpacity: 0.35, opacity: 1 };
   };
 
-  const onEachFeature = (feature, layer) => {
-    const p = feature.properties || {};
-    const html = `
-      <div style="min-width:220px;font-size:12.5px;line-height:1.35">
-        <div><strong>Section:</strong> ${p.plot_name ?? "-"}</div>
-        <div><strong>Type:</strong> ${p.plot_type ?? "-"}</div>
-        <div><strong>Size:</strong> ${p.size_sqm ?? "-"} sqm</div>
-        <div><strong>Status:</strong> ${p.status ?? "-"}</div>
-      </div>
-    `;
-    layer.bindPopup(html);
-  };
-
   const filteredFC = useMemo(() => {
     if (!fc?.features) return null;
     return {
@@ -165,18 +184,7 @@ export default function BurialPlots() {
     };
   }, [fc, onlyAvailable]);
 
-  // highlight + popup
   const highlightFeature = hoveredRow?._feature || null;
-  const highlightStyle = {
-    color: "#0ea5e9",
-    weight: 4,
-    opacity: 1,
-    fillOpacity: 0.15,
-    fillColor: "#38bdf8",
-  };
-  const popupRow = hoveredRow || selectedRow || null;
-  const popupPos =
-    popupRow && popupRow.lat != null && popupRow.lng != null ? [popupRow.lat, popupRow.lng] : null;
 
   const onRowClick = (row) => {
     setSelectedRow(row);
@@ -187,69 +195,31 @@ export default function BurialPlots() {
     }
   };
 
-  // helpers to build curated payloads for modals
-  const buildCoords = (r) => {
-    if (r?.lat != null && r?.lng != null) return `${r.lat.toFixed(6)}, ${r.lng.toFixed(6)}`;
-    const g = r?._feature?.geometry;
-    if (g?.type === "Point" && Array.isArray(g.coordinates)) {
-      const [lng, lat] = g.coordinates;
-      if (typeof lat === "number" && typeof lng === "number")
-        return `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
-    }
-    return undefined;
-  };
-
+  // ---- Dialog open helpers ----
   const openView = (r) => {
-    const props = r?._feature?.properties || {};
-    const coords = buildCoords(r);
-    const viewData = {
-      plot_name: { value: props.plot_name ?? r.plot_name ?? "—", icon: <Layers size={16} /> },
-      status: { value: props.status ?? r.status ?? "—", icon: <Crosshair size={16} /> },
-      plot_type: { value: props.plot_type ?? r.plot_type ?? "—", icon: <Layers size={16} /> },
-      size_sqm: { value: props.size_sqm ?? r.size_sqm ?? "—", icon: <Ruler size={16} /> },
-      coordinates: { value: coords ?? "—", icon: <MapPin size={16} /> },
-    };
-    setModalRow(viewData);
+    setModalRow(r);
     setViewOpen(true);
   };
-
   const openEdit = (r) => {
-    const props = r?._feature?.properties || {};
-
-    // Split coordinates into lat/lng for display (read-only fields in modal)
-    let lat = r?.lat ?? null;
-    let lng = r?.lng ?? null;
-    if (lat == null || lng == null) {
-      const g = r?._feature?.geometry;
-      if (g?.type === "Point" && Array.isArray(g.coordinates)) {
-        const [lngRaw, latRaw] = g.coordinates;
-        if (typeof latRaw === "number" && typeof lngRaw === "number") {
-          lat = latRaw;
-          lng = lngRaw;
-        }
-      }
-    }
-
-    const editData = {
-      id: props.id ?? r.id ?? "",
-      uid: props.uid ?? "",
-      plot_name: props.plot_name ?? r.plot_name ?? "",
-      status: props.status ?? r.status ?? "",
-      plot_type: props.plot_type ?? r.plot_type ?? "",
-      size_sqm: props.size_sqm ?? r.size_sqm ?? "",
-      latitude: lat != null ? lat.toFixed(6) : "",
-      longitude: lng != null ? lng.toFixed(6) : "",
+    // Normalize data for the edit form (stringify lat/lng to fixed precision)
+    const prep = {
+      id: r?.id ?? r?._feature?.properties?.id ?? "",
+      uid: r?._feature?.properties?.uid ?? "",
+      plot_name: r?.plot_name ?? r?._feature?.properties?.plot_name ?? "",
+      status: r?.status ?? r?._feature?.properties?.status ?? "",
+      plot_type: r?.plot_type ?? r?._feature?.properties?.plot_type ?? "",
+      size_sqm: r?.size_sqm ?? r?._feature?.properties?.size_sqm ?? "",
+      latitude: r?.lat != null ? r.lat.toFixed(6) : "",
+      longitude: r?.lng != null ? r.lng.toFixed(6) : "",
     };
-
-    setModalRow(editData);
+    setModalRow(prep);
     setEditOpen(true);
   };
-
-  // Open Add
   const openAdd = () => {
     setModalRow({
       plot_name: "",
       plot_type: "",
+      status: "available",
       size_sqm: "",
       latitude: "",
       longitude: "",
@@ -257,56 +227,48 @@ export default function BurialPlots() {
     setAddOpen(true);
   };
 
-  // Submit from EditModal
+  // ---- Submit handlers ----
   const handleEditSubmit = async (payload) => {
     try {
       await editPlot(payload);
-      showSuccess("Plot updated successfully.");
-      await fetchPlots(); // refresh table + map
+      toast.success("Plot updated successfully.");
+      await fetchPlots();
       setEditOpen(false);
     } catch (err) {
-      showError(err?.message || "Failed to update plot.");
+      toast.error(err?.message || "Failed to update plot.");
     }
   };
 
-  // Submit from AddModal
   const handleAddSubmit = async (payload) => {
     try {
       await addPlot(payload);
-      showSuccess("Plot added successfully.");
-      await fetchPlots(); // refresh table + map
+      toast.success("Plot added successfully.");
+      await fetchPlots();
       setAddOpen(false);
     } catch (err) {
-      showError(err?.message || "Failed to add plot.");
+      toast.error(err?.message || "Failed to add plot.");
     }
   };
 
-  // inside BurialPlots.jsx
-  const deletePlotRequest = async (id) => {
-    if (!token) {
-      showError("You're not authenticated. Please sign in again.");
-      throw new Error("Missing auth token");
+  // ---- Delete (with shadcn AlertDialog) ----
+  const requestDelete = async (id) => {
+    if (!token) throw new Error("You're not authenticated. Please sign in again.");
+    const url = `${API_BASE}/admin/delete-plot/${encodeURIComponent(id)}`;
+
+    let res = await fetch(url, { method: "DELETE", headers: { ...authHeader } }).catch(() => null);
+
+    if (!res || !res.ok) {
+      // some backends keep a GET fallback
+      res = await fetch(url, { method: "GET", headers: { ...authHeader } }).catch(() => null);
     }
 
-    const url = `${API_BASE}/admin/delete-plot/${encodeURIComponent(id)}`;
-    let res = await fetch(url, {
-      method: "DELETE",
-      headers: { ...authHeader },
-    }).catch(() => null);
-    if (!res || !res.ok) {
-      res = await fetch(url, {
-        method: "GET",
-        headers: { ...authHeader },
-      }).catch(() => null);
-    }
     if (!res || !res.ok) {
       if (res && (res.status === 401 || res.status === 403)) {
-        showError("Permission denied. Please sign in with an admin account.");
+        throw new Error("Permission denied. Please sign in with an admin account.");
       }
       const msg = res ? await res.text().catch(() => "") : "Network error";
       throw new Error(msg || "Failed to delete plot.");
     }
-
     try {
       return await res.json();
     } catch {
@@ -314,312 +276,471 @@ export default function BurialPlots() {
     }
   };
 
-  const handleDelete = async (row) => {
+  const confirmDelete = (row) => {
     const id = row?.id ?? row?._feature?.properties?.id ?? row?._feature?.properties?.uid;
     if (!id) {
-      showError("Missing plot ID. Cannot delete.");
+      toast.error("Missing plot ID. Cannot delete.");
       return;
     }
-
-    const ok = await confirmWarning({
-      title: "Delete this plot?",
-      message: "This action cannot be undone. Do you want to proceed?",
-      confirmText: "Delete",
-      cancelText: "Cancel",
-    });
-    if (!ok) return;
-
-    try {
-      await deletePlotRequest(id);
-      showSuccess("Plot deleted successfully.");
-      setHoveredRow((h) => (h?.id === id ? null : h));
-      setSelectedRow((s) => (s?.id === id ? null : s));
-      await fetchPlots(); // refresh table + map
-    } catch (err) {
-      showError(err?.message || "Failed to delete plot.");
-    }
+    setConfirmId(id);
+    setConfirmOpen(true);
   };
 
   return (
-    <div className="p-6 space-y-4 bg-gradient-to-b from-slate-50 via-white to-slate-50 rounded-2xl">
-      {/* Alerts host (toasts + confirm/fallback) */}
-      <AlertsHost />
+    <div className="p-6 space-y-6">
+      {/* shadcn sonner toasts */}
+      <Toaster richColors expand={false} />
 
-      {/* Header */}
-      <div className="mb-1 flex items-center justify-between">
+      <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-800">
-            Burial Plots
-          </h1>
-          <p className="text-sm text-slate-500">
+          <h1 className="text-2xl font-bold">Burial Plots</h1>
+          <p className="text-sm text-muted-foreground">
             View, manage, and map cemetery plot inventory.
           </p>
         </div>
-        <div className="hidden sm:flex items-center gap-2">
-          <button
-            className={`${btnBase} ${btnGradGreen}`}
-            onClick={openAdd}
-            title="Add plot"
-          >
-            <Plus size={16} />
-            Add Plot
-          </button>
-        </div>
+        <Button onClick={openAdd}>
+          <Plus className="mr-2 h-4 w-4" /> Add Plot
+        </Button>
       </div>
 
-      {/* TABLE CARD */}
-      <div className="rounded-2xl border border-slate-200/70 bg-white/80 shadow-lg backdrop-blur-sm overflow-hidden">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-4 py-3 border-b border-slate-200/70 bg-gradient-to-r from-slate-50 to-white">
-          <div className="text-sm font-medium text-slate-800">Plots</div>
+      {/* Error banner */}
+      {error && (
+        <Alert variant="destructive" className="border-rose-200">
+          <TriangleAlert className="h-4 w-4" />
+          <AlertTitle>Failed to load plots</AlertTitle>
+          <AlertDescription className="break-words">{error}</AlertDescription>
+        </Alert>
+      )}
 
-          <div className="flex items-center gap-3">
-            {/* Toggle */}
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-slate-600 hidden sm:inline">Only Available</span>
-              <button
-                type="button"
-                onClick={() => {
-                  setOnlyAvailable((v) => !v);
-                  setHoveredRow(null);
-                  setSelectedRow(null);
-                }}
-                className={
-                  "relative inline-flex h-7 w-12 items-center rounded-full shadow-inner transition " +
-                  (onlyAvailable ? "bg-emerald-500/90" : "bg-slate-300")
-                }
-                aria-pressed={onlyAvailable}
-                title="Toggle availability filter"
-              >
-                <span
-                  className={
-                    "inline-block h-6 w-6 transform rounded-full bg-white shadow transition " +
-                    (onlyAvailable ? "translate-x-6" : "translate-x-1")
-                  }
-                />
-              </button>
-            </div>
-
-            {/* Mobile Add */}
-            <button
-              className={`sm:hidden ${btnBase} ${btnGradGreen}`}
-              onClick={openAdd}
-            >
-              <Plus size={16} />
-              Add
-            </button>
+      {/* Table */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <div>
           </div>
-        </div>
-
-        <div className="max-h-[34vh] overflow-y-auto">
-          <table className="w-full text-left">
-            <thead className="bg-slate-50 sticky top-0 z-10">
-              <tr className="text-slate-600 text-xs uppercase tracking-wide">
-                <th className="px-4 py-3 w-[22%]">Plot Name</th>
-                <th className="px-4 py-3 w-[18%]">Type</th>
-                <th className="px-4 py-3 w-[16%]">Size (sqm)</th>
-                <th className="px-4 py-3 w-[14%]">Status</th>
-                <th className="px-4 py-3 w-[20%]">Coordinates</th>
-                <th className="px-4 py-3 w-[1%] whitespace-nowrap text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="text-sm">
-              {rows.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="px-4 py-8 text-center text-slate-400">
-                    No plots to display.
-                  </td>
-                </tr>
-              )}
-
-              {rows.map((r, idx) => {
-                const s = (r.status || "").toLowerCase();
-                const badgeCls =
-                  s === "available"
-                    ? `${pill} bg-emerald-50 text-emerald-700 ring-emerald-200`
-                    : s === "reserved"
-                    ? `${pill} bg-amber-50 text-amber-700 ring-amber-200`
-                    : s === "occupied"
-                    ? `${pill} bg-rose-50 text-rose-700 ring-rose-200`
-                    : `${pill} bg-slate-100 text-slate-700 ring-slate-200`;
-
-                return (
-                  <tr
-                    key={r.id ?? `${r.plot_name}-${r.plot_type}-${idx}`}
-                    className="hover:bg-slate-50/80 transition cursor-pointer"
-                    onMouseEnter={() => setHoveredRow(r)}
-                    onMouseLeave={() => setHoveredRow(null)}
-                    onClick={() => onRowClick(r)}
-                  >
-                    <td className="px-4 py-3 text-slate-800">{r.plot_name ?? "-"}</td>
-                    <td className="px-4 py-3 text-slate-700">{r.plot_type ?? "-"}</td>
-                    <td className="px-4 py-3 tabular-nums text-slate-700">{r.size_sqm ?? "-"}</td>
-                    <td className="px-4 py-3">
-                      <span className={badgeCls}>{r.status ?? "-"}</span>
-                    </td>
-                    <td className="px-4 py-3 text-slate-600">
-                      {r.lat != null && r.lng != null
-                        ? `${r.lat.toFixed(6)}, ${r.lng.toFixed(6)}`
-                        : "—"}
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <div className="inline-flex items-center gap-1.5 sm:gap-2 flex-nowrap whitespace-nowrap">
-                        <button
-                          className={`${btnBase} ${btnGradBlue} !px-2.5 !py-1 text-[12px]`}
-                          onClick={(e) => { e.stopPropagation(); openView(r); }}
-                          title="View"
-                        >
-                          View
-                        </button>
-                        <button
-                          className={`${btnBase} ${btnGradGreen} !px-2.5 !py-1 text-[12px]`}
-                          onClick={(e) => { e.stopPropagation(); openEdit(r); }}
-                          title="Edit"
-                        >
-                          Edit
-                        </button>
-                        <button
-                          className={`${btnBase} ${btnGradRed} !px-2.5 !py-1 text-[12px]`}
-                          onClick={async (e) => { e.stopPropagation(); await handleDelete(r); }}
-                          title="Delete"
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* MAP */}
-      <div
-        className={
-          "w-full h-[58vh] rounded-2xl overflow-hidden shadow-xl border border-slate-200/70 bg-white/70 backdrop-blur-sm relative z-0" +
-          (modalOpen ? " pointer-events-none" : "")
-        }
-      >
-        {error && (
-          <div className="p-4 text-rose-600 bg-rose-50 border-b border-rose-200">
-            Failed to load plots: {error}
+          <div className="flex items-center gap-2">
+            <span className="text-sm">Only Available</span>
+            <Switch checked={onlyAvailable} onCheckedChange={setOnlyAvailable} />
           </div>
-        )}
-        <MapContainer
-          center={center}
-          zoom={19}
-          minZoom={16}
-          maxZoom={22}
-          whenCreated={(map) => (mapRef.current = map)}
-          style={{ width: "100%", height: "100%", zIndex: 0 }}
-        >
-          <TileLayer
-            attribution="&copy; OpenStreetMap contributors"
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        </CardHeader>
+
+        <CardContent className="overflow-x-auto">
+          {/* limit height + vertical scroll */}
+          <div className="max-h-[420px] overflow-y-auto rounded-md border border-border">
+
+            <Table className="min-w-full">
+              {/* sticky header so it remains visible while scrolling */}
+              <TableHeader className="sticky top-0 z-10 bg-background">
+                <TableRow>
+                  <TableHead className="w-[22%]">Plot Name</TableHead>
+                  <TableHead className="w-[18%]">Type</TableHead>
+                  <TableHead className="w-[16%]">Size (sqm)</TableHead>
+                  <TableHead className="w-[14%]">Status</TableHead>
+                  <TableHead className="w-[20%]">Coordinates</TableHead>
+                  <TableHead className="w-[1%] text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+
+              <TableBody>
+                {rows.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={6} className="text-center text-muted-foreground py-6">
+                      No plots to display.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  rows.map((r, idx) => {
+                    const s = (r.status || "").toLowerCase();
+                    const badgeVariant =
+                      s === "available" ? "success" :
+                      s === "reserved"  ? "warning" :
+                      s === "occupied"  ? "destructive" : "secondary";
+
+                    return (
+                      <TableRow
+                        key={r.id ?? `${r.plot_name}-${idx}`}
+                        onMouseEnter={() => setHoveredRow(r)}
+                        onMouseLeave={() => setHoveredRow(null)}
+                        onClick={() => onRowClick(r)}
+                        className="cursor-pointer"
+                      >
+                        <TableCell>{r.plot_name ?? "-"}</TableCell>
+                        <TableCell>{r.plot_type ?? "-"}</TableCell>
+                        <TableCell className="tabular-nums">{r.size_sqm ?? "-"}</TableCell>
+                        <TableCell>
+                          <Badge variant={badgeVariant}>{r.status ?? "-"}</Badge>
+                        </TableCell>
+                        <TableCell className="text-muted-foreground">
+                          {r.lat != null && r.lng != null
+                            ? `${r.lat.toFixed(6)}, ${r.lng.toFixed(6)}`
+                            : "—"}
+                        </TableCell>
+                        <TableCell className="text-right space-x-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={(e) => { e.stopPropagation(); openView(r); }}
+                          >
+                            <Eye className="h-4 w-4 mr-1" /> View
+                          </Button>
+                          <Button
+                            size="sm"
+                            onClick={(e) => { e.stopPropagation(); openEdit(r); }}
+                          >
+                            <Pencil className="h-4 w-4 mr-1" /> Edit
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            onClick={(e) => { e.stopPropagation(); confirmDelete(r); }}
+                          >
+                            <Trash2 className="h-4 w-4 mr-1" /> Delete
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+
+
+      {/* Map */}
+      <Card className="overflow-hidden">
+        <CardHeader>
+          <CardTitle>Map</CardTitle>
+          <CardDescription>Interactive burial plot map</CardDescription>
+        </CardHeader>
+        <CardContent className="h-[60vh]">
+          <MapContainer
+            center={center}
+            zoom={19}
+            minZoom={16}
             maxZoom={22}
-          />
-
-          {filteredFC && (
-            <GeoJSON
-              key={`plots-${geoKey}-${onlyAvailable}`}
-              data={filteredFC}
-              style={baseStyle}
-              onEachFeature={onEachFeature}
-              pointToLayer={(feature, latlng) =>
-                L.circleMarker(latlng, {
-                  radius: 6,
-                  weight: 2,
-                  fillOpacity: 0.9,
-                  color: "#3b82f6",
-                })
-              }
+            whenCreated={(map) => (mapRef.current = map)}
+            style={{ width: "100%", height: "100%" }}
+          >
+            <TileLayer
+              attribution="&copy; OpenStreetMap contributors"
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              maxZoom={22}
             />
+            {filteredFC && (
+              <GeoJSON
+                key={`plots-${geoKey}-${onlyAvailable}`}
+                data={filteredFC}
+                style={baseStyle}
+                onEachFeature={(feature, layer) => {
+                  const p = feature.properties || {};
+                  const html = `
+                    <div style="min-width:220px;font-size:12.5px;line-height:1.35">
+                      <div><strong>Section:</strong> ${p.plot_name ?? "-"}</div>
+                      <div><strong>Type:</strong> ${p.plot_type ?? "-"}</div>
+                      <div><strong>Size:</strong> ${p.size_sqm ?? "-"} sqm</div>
+                      <div><strong>Status:</strong> ${p.status ?? "-"}</div>
+                    </div>`;
+                  layer.bindPopup(html);
+                }}
+                pointToLayer={(feature, latlng) =>
+                  L.circleMarker(latlng, { radius: 6, weight: 2, fillOpacity: 0.9, color: "#3b82f6" })
+                }
+              />
+            )}
+            {highlightFeature && (
+              <GeoJSON
+                key={hoveredRow?.id || "hover-highlight"}
+                data={highlightFeature}
+                style={() => ({
+                  color: "#0ea5e9",
+                  weight: 4,
+                  opacity: 1,
+                  fillOpacity: 0.15,
+                  fillColor: "#38bdf8",
+                })}
+                pointToLayer={(feature, latlng) =>
+                  L.circleMarker(latlng, { radius: 10, weight: 4, color: "#0ea5e9", opacity: 1, fillOpacity: 0.15 })
+                }
+              />
+            )}
+
+            {(() => {
+              const popupRow = hoveredRow || selectedRow || null;
+              const popupPos =
+                popupRow && popupRow.lat != null && popupRow.lng != null
+                  ? [popupRow.lat, popupRow.lng]
+                  : null;
+              if (!popupRow || !popupPos) return null;
+              return (
+                <Popup position={popupPos} autoPan={false} closeButton={false}>
+                  <div className="text-sm space-y-1">
+                    <div>Type: {popupRow.plot_type ?? "-"}</div>
+                    <div>Section: {popupRow.plot_name ?? "-"}</div>
+                    <div>Size: {popupRow.size_sqm ?? "-"} sqm</div>
+                    <div>
+                      Coords:{" "}
+                      {popupRow.lat && popupRow.lng
+                        ? `${popupRow.lat.toFixed(6)}, ${popupRow.lng.toFixed(6)}`
+                        : "—"}
+                    </div>
+                    <div>Status: {popupRow.status ?? "-"}</div>
+                  </div>
+                </Popup>
+              );
+            })()}
+          </MapContainer>
+        </CardContent>
+      </Card>
+
+      {/* View Dialog */}
+      <Dialog open={viewOpen} onOpenChange={setViewOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>View Plot</DialogTitle>
+            <DialogDescription>Details of the selected plot</DialogDescription>
+          </DialogHeader>
+          {modalRow && (
+            <div className="grid gap-3 text-sm">
+              <div><strong>Name:</strong> {modalRow.plot_name ?? "—"}</div>
+              <div><strong>Type:</strong> {modalRow.plot_type ?? "—"}</div>
+              <div><strong>Size:</strong> {modalRow.size_sqm ?? "—"} sqm</div>
+              <div><strong>Status:</strong> {modalRow.status ?? "—"}</div>
+              <div>
+                <strong>Coords:</strong>{" "}
+                {modalRow.lat != null && modalRow.lng != null
+                  ? `${modalRow.lat.toFixed(6)}, ${modalRow.lng.toFixed(6)}`
+                  : "—"}
+              </div>
+            </div>
           )}
+        </DialogContent>
+      </Dialog>
 
-          {highlightFeature && (
-            <GeoJSON
-              key={hoveredRow?.id || "hover-highlight"}
-              data={highlightFeature}
-              style={() => highlightStyle}
-              pointToLayer={(feature, latlng) =>
-                L.circleMarker(latlng, {
-                  radius: 10,
-                  weight: highlightStyle.weight,
-                  color: highlightStyle.color,
-                  opacity: highlightStyle.opacity,
-                  fillOpacity: highlightStyle.fillOpacity,
-                })
-              }
-            />
-          )}
-
-          {popupRow && popupPos && (
-            <Popup position={popupPos} autoPan={false} closeButton={false}>
-              <div className="min-w-[220px] space-y-1.5 text-[13px]">
-                <div className="flex items-center gap-2">
-                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-slate-600">
-                    <Layers size={14} />
-                  </span>
-                  <span>Type: {popupRow.plot_type ?? "-"}</span>
+      {/* Edit Dialog */}
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent className="sm:max-w-[560px]">
+          <DialogHeader>
+            <DialogTitle>Edit Plot</DialogTitle>
+            <DialogDescription>Update burial plot details</DialogDescription>
+          </DialogHeader>
+          {modalRow && (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                // Coerce numbers / trim strings
+                const payload = {
+                  id: modalRow.id ?? "",
+                  uid: modalRow.uid ?? "",
+                  plot_name: (modalRow.plot_name ?? "").toString().trim(),
+                  status: (modalRow.status ?? "").toString().trim(),
+                  plot_type: (modalRow.plot_type ?? "").toString().trim(),
+                  size_sqm: modalRow.size_sqm === "" ? null : Number(modalRow.size_sqm),
+                  latitude:
+                    modalRow.latitude === "" ? null : Number.parseFloat(String(modalRow.latitude)),
+                  longitude:
+                    modalRow.longitude === "" ? null : Number.parseFloat(String(modalRow.longitude)),
+                };
+                handleEditSubmit(payload);
+              }}
+              className="space-y-4"
+            >
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label>Id</Label>
+                  <Input value={modalRow.id ?? ""} readOnly className="text-slate-500 border-slate-200" />
                 </div>
-
-                <div className="flex items-center gap-2">
-                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-slate-600">
-                    <Tag size={14} />
-                  </span>
-                  <span>Section: {popupRow.plot_name ?? "-"}</span>
+                <div className="space-y-1.5">
+                  <Label>Uid</Label>
+                  <Input value={modalRow.uid ?? ""} readOnly className="text-slate-500 border-slate-200" />
                 </div>
-
-                <div className="flex items-center gap-2">
-                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-slate-600">
-                    <Ruler size={14} />
-                  </span>
-                  <span>Size: {popupRow.size_sqm ?? "-"} sqm</span>
+                <div className="space-y-1.5">
+                  <Label>Plot Name</Label>
+                  <Input
+                    value={modalRow.plot_name ?? ""}
+                    onChange={(e) => setModalRow((m) => ({ ...m, plot_name: e.target.value }))}
+                  />
                 </div>
-
-                <div className="flex items-center gap-2">
-                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-slate-600">
-                    <MapPin size={14} />
-                  </span>
-                  <span>
-                    Coords:{" "}
-                    {popupRow.lat != null && popupRow.lng != null
-                      ? `${popupRow.lat.toFixed(6)}, ${popupRow.lng.toFixed(6)}`
-                      : "—"}
-                  </span>
+                <div className="space-y-1.5">
+                  <Label>Status</Label>
+                  <select
+                    value={modalRow.status ?? ""}
+                    onChange={(e) => setModalRow((m) => ({ ...m, status: e.target.value }))}
+                    className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-200 focus-visible:ring-offset-0"
+                  >
+                    <option value="">— Select Status —</option>
+                    <option value="available">Available</option>
+                    <option value="reserved">Reserved</option>
+                    <option value="occupied">Occupied</option>
+                  </select>
                 </div>
-
-                <div className="flex items-center gap-2">
-                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-slate-600">
-                    <Crosshair size={14} />
-                  </span>
-                  <span>Status: {popupRow.status ?? "-"}</span>
+                <div className="space-y-1.5">
+                  <Label>Plot Type</Label>
+                  <Input
+                    value={modalRow.plot_type ?? ""}
+                    onChange={(e) => setModalRow((m) => ({ ...m, plot_type: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Size Sqm</Label>
+                  <Input
+                    type="number"
+                    value={modalRow.size_sqm ?? ""}
+                    onChange={(e) => setModalRow((m) => ({ ...m, size_sqm: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Latitude</Label>
+                  <Input
+                    type="number"
+                    value={modalRow.latitude ?? ""}
+                    onChange={(e) => setModalRow((m) => ({ ...m, latitude: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Longitude</Label>
+                  <Input
+                    type="number"
+                    value={modalRow.longitude ?? ""}
+                    onChange={(e) => setModalRow((m) => ({ ...m, longitude: e.target.value }))}
+                  />
                 </div>
               </div>
-            </Popup>
+
+              <DialogFooter className="gap-2 sm:gap-0">
+                <Button type="button" variant="outline" onClick={() => setEditOpen(false)}>
+                  Cancel
+                </Button>
+                <Button type="submit">Save</Button>
+              </DialogFooter>
+            </form>
           )}
-        </MapContainer>
-      </div>
+        </DialogContent>
+      </Dialog>
 
-      {/* Modals */}
-      <ViewModal open={viewOpen} onClose={() => setViewOpen(false)} data={modalRow} />
+      {/* Add Dialog */}
+      <Dialog open={addOpen} onOpenChange={setAddOpen}>
+        <DialogContent className="sm:max-w-[560px]">
+          <DialogHeader>
+            <DialogTitle>Add New Plot</DialogTitle>
+            <DialogDescription>Create a new burial plot record</DialogDescription>
+          </DialogHeader>
+          {modalRow && (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                const payload = {
+                  plot_name: (modalRow.plot_name ?? "").toString().trim(),
+                  status: (modalRow.status ?? "").toString().trim(),
+                  plot_type: (modalRow.plot_type ?? "").toString().trim(),
+                  size_sqm: modalRow.size_sqm === "" ? null : Number(modalRow.size_sqm),
+                  latitude:
+                    modalRow.latitude === "" ? null : Number.parseFloat(String(modalRow.latitude)),
+                  longitude:
+                    modalRow.longitude === "" ? null : Number.parseFloat(String(modalRow.longitude)),
+                };
+                handleAddSubmit(payload);
+              }}
+              className="space-y-4"
+            >
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label>Plot Name</Label>
+                  <Input
+                    value={modalRow.plot_name ?? ""}
+                    onChange={(e) => setModalRow((m) => ({ ...m, plot_name: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Status</Label>
+                  <select
+                    value={modalRow.status ?? ""}
+                    onChange={(e) => setModalRow((m) => ({ ...m, status: e.target.value }))}
+                    className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-200 focus-visible:ring-offset-0"
+                  >
+                    <option value="">— Select Status —</option>
+                    <option value="available">Available</option>
+                    <option value="reserved">Reserved</option>
+                    <option value="occupied">Occupied</option>
+                  </select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Plot Type</Label>
+                  <Input
+                    value={modalRow.plot_type ?? ""}
+                    onChange={(e) => setModalRow((m) => ({ ...m, plot_type: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Size Sqm</Label>
+                  <Input
+                    type="number"
+                    value={modalRow.size_sqm ?? ""}
+                    onChange={(e) => setModalRow((m) => ({ ...m, size_sqm: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Latitude</Label>
+                  <Input
+                    type="number"
+                    value={modalRow.latitude ?? ""}
+                    onChange={(e) => setModalRow((m) => ({ ...m, latitude: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Longitude</Label>
+                  <Input
+                    type="number"
+                    value={modalRow.longitude ?? ""}
+                    onChange={(e) => setModalRow((m) => ({ ...m, longitude: e.target.value }))}
+                  />
+                </div>
+              </div>
 
-      <EditModal
-        open={editOpen}
-        onClose={() => setEditOpen(false)}
-        data={modalRow}
-        onSubmit={handleEditSubmit}
-        title={"Edit Plot"}
-      />
+              <DialogFooter className="gap-2 sm:gap-0">
+                <Button type="button" variant="outline" onClick={() => setAddOpen(false)}>
+                  Cancel
+                </Button>
+                <Button type="submit">Add</Button>
+              </DialogFooter>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
 
-      <AddModal
-        open={addOpen}
-        onClose={() => setAddOpen(false)}
-        data={modalRow}
-        onSubmit={handleAddSubmit}
-        title="Add New Plot"
-      />
+      {/* Delete confirmation (shadcn AlertDialog) */}
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this plot?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This action cannot be undone. Do you want to proceed?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-rose-600 hover:bg-rose-700"
+              onClick={async () => {
+                const id = confirmId;
+                setConfirmOpen(false);
+                setConfirmId(null);
+                try {
+                  await requestDelete(id);
+                  toast.success("Plot deleted successfully.");
+                  setHoveredRow((h) => (h?.id === id ? null : h));
+                  setSelectedRow((s) => (s?.id === id ? null : s));
+                  await fetchPlots();
+                } catch (err) {
+                  toast.error(err?.message || "Failed to delete plot.");
+                }
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

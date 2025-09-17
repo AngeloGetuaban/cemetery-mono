@@ -1,69 +1,134 @@
-// frontend/src/views/admin/components/EditModal.jsx
-import { useEffect, useState } from "react";
-import { X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Button } from "../../../components/ui/button";
+import { Input } from "../../../components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "../../../components/ui/dialog";
 
+/**
+ * @param {Object} props
+ * @param {boolean} props.open
+ * @param {() => void} props.onClose
+ * @param {Object} props.data            // incoming plot
+ * @param {(payload: any) => Promise<any>} props.onSubmit  // returns saved item or throws
+ * @param {string} [props.title]
+ */
 export default function EditModal({ open, onClose, data, onSubmit, title = "Edit Plot" }) {
-  const [form, setForm] = useState(data || {});
+  const [form, setForm] = useState(() => data ?? {});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
+  // fields to render, in order
+  const fields = useMemo(
+    () => [
+      { key: "id", label: "Id", readOnly: true, type: "text" },
+      { key: "uid", label: "Uid", readOnly: true, type: "text" },
+      { key: "plot_name", label: "Plot Name", type: "text", fallback: "plot_name" in (data ?? {}) ? data.plot_name : "" },
+      { key: "status", label: "Status", type: "select" },
+      { key: "plot_type", label: "Plot Type", type: "text" },
+      { key: "size_sqm", label: "Size Sqm", type: "number" },
+      { key: "latitude", label: "Latitude", type: "number" },
+      { key: "longitude", label: "Longitude", type: "number" },
+    ],
+    [data]
+  );
+
   useEffect(() => {
-    if (open) setForm(data || {});
+    if (open) {
+      setForm(data ?? {});
+      setError("");
+      setSaving(false);
+    }
   }, [open, data]);
 
   if (!open || !data) return null;
 
-  const handleChange = (k, v) => setForm((prev) => ({ ...prev, [k]: v }));
+  const handleChange = (key, value) => {
+    setError("");
+    setForm((prev) => ({ ...prev, [key]: value }));
+  };
+
+  // sanitize before submit (numbers as numbers, trim strings)
+  const buildPayload = () => {
+    const out = {};
+    for (const f of fields) {
+      const v = form[f.key];
+      if (f.type === "number") {
+        const n = typeof v === "number" ? v : parseFloat(String(v).trim());
+        out[f.key] = Number.isFinite(n) ? n : null;
+      } else if (f.type === "select") {
+        out[f.key] = (v ?? "").toString().trim();
+      } else {
+        out[f.key] = (v ?? "").toString().trim();
+      }
+    }
+    return out;
+  };
+
+  const extractErrMessage = (err) => {
+    if (err?.response?.data) {
+      const d = err.response.data;
+      return d?.message || d?.error || d?.detail || JSON.stringify(d);
+    }
+    if (err?.data) {
+      const d = err.data;
+      return d?.message || d?.error || d?.detail || JSON.stringify(d);
+    }
+    return err?.message || String(err) || "Failed to save.";
+  };
 
   const submit = async (e) => {
     e.preventDefault();
     if (!onSubmit) return;
-    setError("");
+
     setSaving(true);
+    setError("");
+
     try {
-      await onSubmit(form);
+      const payload = buildPayload();
+      const saved = await onSubmit(payload);
+      onClose?.(saved);
     } catch (err) {
-      setError(err?.message || "Failed to save.");
+      setError(extractErrMessage(err));
     } finally {
       setSaving(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-      <div className="bg-white rounded-2xl shadow-2xl w-[540px] max-w-[92vw] p-6 relative border border-slate-200">
-        <button
-          onClick={onClose}
-          className="absolute top-3 right-3 text-slate-500 hover:text-slate-800"
-          aria-label="Close"
-        >
-          <X size={20} />
-        </button>
+    <Dialog open={open} onOpenChange={(o) => (!o ? onClose?.() : null)}>
+      <DialogContent className="sm:max-w-[560px]">
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>Edit the details for this plot record.</DialogDescription>
+        </DialogHeader>
 
-        <h2 className="text-lg font-semibold mb-4">{title}</h2>
-
-        {error && (
-          <div className="mb-3 rounded-md border border-rose-200 bg-rose-50 text-rose-700 px-3 py-2 text-sm">
+        {error ? (
+          <div className="rounded-md border border-rose-200 bg-rose-50 text-rose-700 px-3 py-2 text-sm">
             {error}
           </div>
-        )}
+        ) : null}
 
-        <form onSubmit={submit} className="space-y-4">
+        <form onSubmit={submit} className="space-y-5">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {Object.entries(form).map(([k, v]) => {
-              if (["_feature", "created_at", "updated_at"].includes(k)) return null;
-              const readOnly = ["id", "uid"].includes(k);
+            {fields.map((f) => {
+              const v = form?.[f.key] ?? "";
+              const readOnly = !!f.readOnly;
 
-              if (k === "status") {
+              if (f.type === "select") {
                 return (
-                  <div key={k} className="flex flex-col">
-                    <label className="text-xs font-medium text-slate-600 mb-1 capitalize">
-                      {k.replaceAll("_", " ")}
-                    </label>
+                  <div key={f.key} className="space-y-1.5">
+                    <label className="text-xs font-medium text-slate-600">{f.label}</label>
                     <select
-                      value={v ?? ""}
-                      onChange={(e) => handleChange(k, e.target.value)}
-                      className="border rounded-lg px-3 py-2 text-sm border-slate-300 focus:ring-2 focus:ring-emerald-200 focus:border-emerald-400"
+                      value={v}
+                      onChange={(e) => handleChange(f.key, e.target.value)}
+                      disabled={readOnly}
+                      className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-200 focus-visible:ring-offset-0 disabled:opacity-50"
                     >
                       <option value="">— Select Status —</option>
                       <option value="available">Available</option>
@@ -75,46 +140,30 @@ export default function EditModal({ open, onClose, data, onSubmit, title = "Edit
               }
 
               return (
-                <div key={k} className="flex flex-col">
-                  <label className="text-xs font-medium text-slate-600 mb-1 capitalize">
-                    {k.replaceAll("_", " ")}
-                  </label>
-                  <input
-                    type="text"
-                    value={v ?? ""}
+                <div key={f.key} className="space-y-1.5">
+                  <label className="text-xs font-medium text-slate-600">{f.label}</label>
+                  <Input
+                    type={f.type === "number" ? "number" : "text"}
+                    value={v}
                     readOnly={readOnly}
-                    onChange={(e) => !readOnly && handleChange(k, e.target.value)}
-                    className={
-                      "border rounded-lg px-3 py-2 text-sm bg-white " +
-                      (readOnly
-                        ? "text-slate-500 border-slate-200"
-                        : "border-slate-300 focus:ring-2 focus:ring-emerald-200 focus:border-emerald-400")
-                    }
+                    onChange={(e) => !readOnly && handleChange(f.key, e.target.value)}
+                    className={readOnly ? "text-slate-500 border-slate-200" : ""}
                   />
                 </div>
               );
             })}
           </div>
 
-          <div className="flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-3 py-1.5 rounded-lg border border-slate-300 text-slate-700 text-sm hover:bg-slate-50"
-              disabled={saving}
-            >
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button type="button" variant="outline" onClick={() => onClose?.()} disabled={saving}>
               Cancel
-            </button>
-            <button
-              type="submit"
-              className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm disabled:opacity-60"
-              disabled={saving}
-            >
+            </Button>
+            <Button type="submit" disabled={saving}>
               {saving ? "Saving…" : "Save"}
-            </button>
-          </div>
+            </Button>
+          </DialogFooter>
         </form>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

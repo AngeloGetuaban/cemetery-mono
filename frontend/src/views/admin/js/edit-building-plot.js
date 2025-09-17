@@ -5,7 +5,7 @@ const API_BASE =
 
 export async function editBuildingPlot(payload) {
   const auth = getAuth();
-  const token = auth?.token; 
+  const token = auth?.token;
 
   const res = await fetch(`${API_BASE}/admin/edit-building-plot`, {
     method: "PUT",
@@ -17,10 +17,16 @@ export async function editBuildingPlot(payload) {
   });
 
   const ct = res.headers.get("content-type") || "";
-  const body = ct.includes("application/json") ? await res.json() : await res.text();
+  const body = ct.includes("application/json")
+    ? await res.json().catch(() => null)
+    : await res.text();
 
   if (!res.ok) {
-    throw new Error(typeof body === "string" ? body : JSON.stringify(body));
+    const msg =
+      (body && (body.message || body.error || body.detail)) ||
+      (typeof body === "string" ? body : "Failed to update.");
+    throw new Error(msg);
   }
-  return body;
+
+  return body ?? { ok: true };
 }

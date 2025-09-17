@@ -11,6 +11,12 @@ const pool = require('./config/database');
 
 const app = express();
 
+
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" }, // allow embedding from other origins
+  crossOriginEmbedderPolicy: false,                      // don’t require CORP on everything
+}));
+
 // security & body parsing
 app.use(helmet());
 app.use(cors());
@@ -21,7 +27,15 @@ app.use(express.urlencoded({ extended: true }));
 app.use(morgan('dev'));
 
 // serve uploaded images
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/uploads', express.static(
+  path.join(process.cwd(), 'uploads'),
+  {
+    setHeaders(res/*, filePath*/) {
+      res.setHeader('Access-Control-Allow-Origin', '*');             // or your FE origin
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin'); // important
+    }
+  }
+));
 
 // root route – check DB connection
 app.get('/', async (req, res) => {

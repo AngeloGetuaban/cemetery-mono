@@ -242,13 +242,60 @@ const addBuildingPlots = BuildingHandlers.add;
 const editBuildingPlots = BuildingHandlers.edit;
 const deleteBuildingPlots = BuildingHandlers.del;
 
+function clean(obj) {
+  // keep falsy like 0/false/''; drop only undefined/null
+  return Object.fromEntries(
+    Object.entries(obj || {}).filter(([, v]) => v !== undefined && v !== null)
+  );
+}
+
+function buildQrPayload(snapshot) {
+  // Include ALL inputs you care about in the QR
+  return JSON.stringify(
+    clean({
+      _type: "burial_record",
+      id: snapshot.id,
+      uid: snapshot.uid,
+      plot_id: snapshot.plot_id,
+      deceased_name: snapshot.deceased_name,
+      birth_date: snapshot.birth_date,
+      death_date: snapshot.death_date,
+      burial_date: snapshot.burial_date,
+      family_contact: snapshot.family_contact,
+      headstone_type: snapshot.headstone_type,
+      memorial_text: snapshot.memorial_text,
+      is_active: snapshot.is_active,
+      lat: snapshot.lat,
+      lng: snapshot.lng,
+      created_at: snapshot.created_at,
+      updated_at: snapshot.updated_at,
+    })
+  );
+}
+
+async function getPlotLatLng(plotId) {
+  if (!plotId) return { lat: undefined, lng: undefined };
+  const { rows } = await pool.query(
+    `SELECT ST_Y(coordinates) AS lat, ST_X(coordinates) AS lng FROM plots WHERE id = $1 LIMIT 1`,
+    [plotId]
+  );
+  if (rows.length === 0) return { lat: undefined, lng: undefined };
+  return { lat: rows[0].lat, lng: rows[0].lng };
+}
+
+
 async function getBurialRecords(req, res, next) {
   try {
-    // optional pagination: /api/graves?limit=100&offset=0
     const limit = req.query?.limit ? Number(req.query.limit) : null;
     const offset = req.query?.offset ? Number(req.query.offset) : null;
 
-    let sql = `SELECT * FROM graves ORDER BY id DESC`;
+    let sql = `
+      SELECT g.*,
+             u.first_name || ' ' || u.last_name AS family_contact_name
+      FROM graves g
+      LEFT JOIN users u ON g.family_contact = u.id
+      ORDER BY g.id DESC
+    `;
     const params = [];
 
     if (Number.isFinite(limit) && limit > 0) {
@@ -267,7 +314,7 @@ async function getBurialRecords(req, res, next) {
   }
 }
 
-// ADD: create a burial record, occupy the plot, generate qr_token
+
 async function addBurialRecord(req, res, next) {
   const client = await pool.connect();
   try {
@@ -291,31 +338,25 @@ async function addBurialRecord(req, res, next) {
       return res.status(400).json({ error: "plot_id and deceased_name are required" });
     }
 
-    // fetch plot to get coordinates
-    const plotQ = await pool.query(
-      `SELECT id, ST_X(coordinates) AS lng, ST_Y(coordinates) AS lat
-       FROM plots WHERE id = $1`,
+    // ensure plot exists + get coordinates
+    const { rows: plotRows } = await pool.query(
+      `SELECT id, ST_Y(coordinates) AS lat, ST_X(coordinates) AS lng FROM plots WHERE id = $1 LIMIT 1`,
       [plot_id]
     );
-    if (plotQ.rows.length === 0) return res.status(404).json({ error: "Plot not found" });
+    if (plotRows.length === 0) return res.status(404).json({ error: "Plot not found" });
+    const { lat, lng } = plotRows[0];
 
-    const { lat, lng } = plotQ.rows[0] || {};
-    const tsIso = new Date().toISOString();
-    // short token that fits varchar(255)
-    // Example: GOP|p:12|lat:14.5995|lng:120.9842|c:2025-09-09T12:34:56.000Z|u:2025-09-09T12:34:56.000Z
-    const qr_token = [
-      "GOP",
-      `p:${plot_id}`,
-      Number.isFinite(lat) ? `lat:${lat}` : undefined,
-      Number.isFinite(lng) ? `lng:${lng}` : undefined,
-      `c:${tsIso}`,
-      `u:${tsIso}`,
-    ]
-      .filter(Boolean)
-      .join("|")
-      .slice(0, 250); // safety margin under 255
+    // fetch family_contact_name if provided
+    let family_contact_name = null;
+    if (family_contact) {
+      const { rows: userRows } = await pool.query(
+        `SELECT first_name || ' ' || last_name AS name FROM users WHERE id = $1 LIMIT 1`,
+        [family_contact]
+      );
+      family_contact_name = userRows[0]?.name || null;
+    }
 
-    // generate unique 5-char UID for graves
+    // generate UID
     const isUidTaken = async (uid) => {
       const { rows } = await pool.query(`SELECT 1 FROM graves WHERE uid = $1 LIMIT 1`, [uid]);
       return rows.length > 0;
@@ -323,23 +364,36 @@ async function addBurialRecord(req, res, next) {
     let uid = null;
     for (let i = 0; i < 12; i++) {
       const cand = genUid();
-      // avoid ambiguous characters if you want; keeping your genUid as-is
-      if (!(await isUidTaken(cand))) {
-        uid = cand;
-        break;
-      }
+      if (!(await isUidTaken(cand))) { uid = cand; break; }
     }
     if (!uid) return res.status(500).json({ error: "Failed to generate unique uid" });
 
     await client.query("BEGIN");
 
-    // mark plot occupied
     await client.query(
       `UPDATE plots SET status = 'occupied', updated_at = NOW() WHERE id = $1`,
       [plot_id]
     );
 
-    // insert grave
+    const nowIso = new Date().toISOString();
+    const snapshot = {
+      uid,
+      plot_id,
+      deceased_name,
+      birth_date: birth_date || null,
+      death_date: death_date || null,
+      burial_date: burial_date || null,
+      family_contact: family_contact || null,
+      family_contact_name, 
+      headstone_type: headstone_type || null,
+      memorial_text: memorial_text || null,
+      is_active: true,
+      lat, lng,
+      created_at: nowIso,
+      updated_at: nowIso,
+    };
+    const qr_token = buildQrPayload(snapshot);
+
     const ins = await client.query(
       `
       INSERT INTO graves
@@ -374,6 +428,144 @@ async function addBurialRecord(req, res, next) {
   }
 }
 
+// --- EDIT BURIAL RECORD ---
+async function editBurialRecord(req, res, next) {
+  try {
+    const {
+      id,
+      uid,
+      plot_id,
+      deceased_name,
+      birth_date,
+      death_date,
+      burial_date,
+      family_contact,
+      headstone_type,
+      memorial_text,
+      is_active,
+    } = req.body || {};
+
+    if (!id && !uid) {
+      return res.status(400).json({ error: "Missing record identifier (id or uid)." });
+    }
+
+    const whereClause = id ? "id = $1" : "uid = $1";
+    const { rows: foundRows } = await pool.query(
+      `SELECT * FROM graves WHERE ${whereClause} LIMIT 1`,
+      [id ?? uid]
+    );
+    if (foundRows.length === 0) {
+      return res.status(404).json({ error: "Record not found." });
+    }
+    const existing = foundRows[0];
+
+    // fetch family_contact_name if provided
+    let family_contact_name = null;
+    if (family_contact) {
+      const { rows: userRows } = await pool.query(
+        `SELECT first_name || ' ' || last_name AS name FROM users WHERE id = $1 LIMIT 1`,
+        [family_contact]
+      );
+      family_contact_name = userRows[0]?.name || null;
+    }
+
+    const changes = clean({
+      plot_id,
+      deceased_name,
+      birth_date,
+      death_date,
+      burial_date,
+      family_contact,
+      headstone_type,
+      memorial_text,
+      is_active,
+    });
+    const updatedAt = new Date();
+    changes.updated_at = updatedAt;
+
+    const merged = { ...existing, ...changes };
+    const { lat, lng } = await getPlotLatLng(merged.plot_id);
+    merged.lat = lat;
+    merged.lng = lng;
+
+    merged.created_at = existing.created_at?.toISOString?.() || existing.created_at || null;
+    merged.updated_at = updatedAt.toISOString();
+
+    if (family_contact_name) merged.family_contact_name = family_contact_name;
+
+    const qr_token = buildQrPayload(merged);
+    changes.qr_token = qr_token;
+
+    const setParts = [];
+    const params = [];
+    Object.entries(changes).forEach(([key, value], idx) => {
+      setParts.push(`${key} = $${idx + 1}`);
+      params.push(value);
+    });
+
+    params.push(id ?? uid);
+    const where = id ? `id = $${params.length}` : `uid = $${params.length}`;
+
+    const sql = `UPDATE graves SET ${setParts.join(", ")} WHERE ${where} RETURNING *;`;
+    const { rows } = await pool.query(sql, params);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Record not found after update." });
+    }
+
+    res.json(rows[0]);
+  } catch (err) {
+    next(err);
+  }
+}
+
+
+async function deleteBurialRecord(req, res, next) {
+  try {
+    const identifier = req.params?.id;
+    if (!identifier) {
+      return res.status(400).json({ error: 'Missing record identifier.' });
+    }
+
+    // Try numeric id; if NaN, treat as uid
+    const asNumber = Number(identifier);
+    let sql, params;
+
+    if (Number.isFinite(asNumber)) {
+      sql = `DELETE FROM graves WHERE id = $1 RETURNING *;`;
+      params = [asNumber];
+    } else {
+      sql = `DELETE FROM graves WHERE uid = $1 RETURNING *;`;
+      params = [identifier];
+    }
+
+    const { rows } = await pool.query(sql, params);
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Record not found.' });
+    }
+
+    res.json({ success: true, deleted: rows[0] });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function getVisitorUsers(req, res, next) {
+  try {
+    const { rows } = await pool.query(
+      `
+      SELECT id, last_name, first_name
+      FROM users
+      WHERE role = $1
+      ORDER BY last_name ASC, first_name ASC
+      `,
+      ["visitor"]
+    );
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+}
 
 module.exports = {
   dashboardMetrics,
@@ -390,4 +582,8 @@ module.exports = {
   deleteBuildingPlots,
   getBurialRecords,
   addBurialRecord, 
+
+  editBurialRecord,
+  deleteBurialRecord,
+  getVisitorUsers,
 };

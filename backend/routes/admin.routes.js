@@ -18,4 +18,7 @@ router.put("/edit-building-plot", adminController.editBuildingPlots);
 router.delete("/delete-building-plot/:id", adminController.deleteBuildingPlots);
 router.get('/graves', adminController.getBurialRecords);
 router.post('/graves', adminController.addBurialRecord);
+router.post('/edit-burial-record', adminController.editBurialRecord);
+router.delete('/delete-burial-record/:id', adminController.deleteBurialRecord);
+router.get("/users/visitors", adminController.getVisitorUsers);
 module.exports = router;
