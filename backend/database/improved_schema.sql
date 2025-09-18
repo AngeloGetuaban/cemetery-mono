@@ -8,7 +8,20 @@
 
 -- ---------- Extensions ----------
 CREATE EXTENSION IF NOT EXISTS postgis;
-CREATE EXTENSION IF NOT EXISTS postgis_topology;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='cemetery_user') THEN
+    CREATE ROLE cemetery_user LOGIN PASSWORD 'cemetery123';
+  END IF;
+END$$;
+
+-- make sure it can use the db and schema
+GRANT CONNECT ON DATABASE cemetery_db TO cemetery_user;
+GRANT USAGE ON SCHEMA public TO cemetery_user;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO cemetery_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO cemetery_user;
+
 
 -- ---------- Drop existing objects (safe order) ----------
 DO $$
@@ -40,6 +53,8 @@ DROP TABLE IF EXISTS graves CASCADE;
 DROP TABLE IF EXISTS navigation_paths CASCADE;
 DROP TABLE IF EXISTS cemetery_infrastructure CASCADE;
 DROP TABLE IF EXISTS plots CASCADE;
+DROP TABLE IF EXISTS road_plots CASCADE;
+DROP TABLE IF EXISTS building_plots CASCADE;
 DROP TABLE IF EXISTS cemetery_sections CASCADE;
 DROP TABLE IF EXISTS users CASCADE;
 
@@ -116,6 +131,44 @@ CREATE TABLE plots (
     updated_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE road_plots (
+    id            BIGSERIAL PRIMARY KEY,
+    uid           CHAR(5) UNIQUE NOT NULL DEFAULT generate_uid(),
+    plot_code     VARCHAR(20) UNIQUE NOT NULL,
+    section_id    BIGINT REFERENCES cemetery_sections(id) ON DELETE SET NULL,
+    section_name  VARCHAR(10),
+    row_num       INTEGER,
+    col_num       INTEGER,
+    plot_type     VARCHAR(50) DEFAULT 'standard',
+    size_sqm      DECIMAL(8,2),
+    status        VARCHAR(20) NOT NULL DEFAULT 'available'
+                  CHECK (status IN ('available','reserved','occupied','maintenance')),
+    coordinates   GEOMETRY(POINT, 4326) NOT NULL,
+    plot_boundary GEOMETRY(POLYGON, 4326),
+    price         DECIMAL(10,2),
+    created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE building_plots (
+    id            BIGSERIAL PRIMARY KEY,
+    uid           CHAR(5) UNIQUE NOT NULL DEFAULT generate_uid(),
+    plot_code     VARCHAR(20) UNIQUE NOT NULL,
+    section_id    BIGINT REFERENCES cemetery_sections(id) ON DELETE SET NULL,
+    section_name  VARCHAR(10),
+    row_num       INTEGER,
+    col_num       INTEGER,
+    plot_type     VARCHAR(50) DEFAULT 'standard',
+    size_sqm      DECIMAL(8,2),
+    status        VARCHAR(20) NOT NULL DEFAULT 'available'
+                  CHECK (status IN ('available','reserved','occupied','maintenance')),
+    coordinates   GEOMETRY(POINT, 4326) NOT NULL,
+    plot_boundary GEOMETRY(POLYGON, 4326),
+    price         DECIMAL(10,2),
+    created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Cemetery infrastructure (buildings, roads, facilities)
 CREATE TABLE cemetery_infrastructure (
     id            BIGSERIAL PRIMARY KEY,
@@ -140,7 +193,7 @@ CREATE TABLE graves (
     burial_date     DATE,
     qr_token        VARCHAR(255) UNIQUE,
     epitaph         TEXT,
-    family_contact  VARCHAR(100),
+    family_contact  BIGINT,
     headstone_type  VARCHAR(50),
     memorial_text   TEXT,
     is_active       BOOLEAN NOT NULL DEFAULT TRUE,
@@ -273,8 +326,8 @@ INSERT INTO users (
   'Super',
   'Admin',
   'super_admin',
-  'gardenofpeace123',
-  'a0600f4c2eb7d39d94840d837789ee5b1ed5cf989579c070ba301806cc4078e1',
+  'cemeterygroup1',
+  '305d977bca42d9eb7ff8997828af9d35fbe224a18282647e1350636d86a14699',
   TRUE
 );
 

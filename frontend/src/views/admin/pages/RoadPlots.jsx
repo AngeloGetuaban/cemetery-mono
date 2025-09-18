@@ -1,6 +1,6 @@
 // frontend/src/views/admin/pages/RoadPlots.jsx
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
-import { MapContainer, TileLayer, GeoJSON, Popup } from "react-leaflet";
+import { MapContainer, TileLayer, GeoJSON, Popup, useMapEvents, CircleMarker } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
@@ -71,6 +71,13 @@ const API_BASE =
 const GEOJSON_URL = `${API_BASE}/plot/road-plots/`;
 const DELETE_URL = (id) => `${API_BASE}/admin/delete-road-plot/${encodeURIComponent(id)}`;
 
+/* ---------------- Cemetery focus (center & bounds) ---------------- */
+const CEMETERY_CENTER = [15.49492, 120.55533];
+const CEMETERY_BOUNDS = L.latLngBounds(
+  [15.4938, 120.5544], // SW
+  [15.4960, 120.5562]  // NE
+);
+
 /* ---------------- utils ---------------- */
 function centroidOfFeature(feature) {
   try {
@@ -87,6 +94,20 @@ function centroidOfFeature(feature) {
   }
 }
 
+/* Click-to-pick component: clicking the map sets lat/lng */
+function CoordinatePicker({ active, onPick }) {
+  useMapEvents({
+    click(e) {
+      if (!active) return;
+      const { lat, lng } = e.latlng || {};
+      if (typeof lat === "number" && typeof lng === "number") {
+        onPick(lat, lng);
+      }
+    },
+  });
+  return null;
+}
+
 export default function RoadPlots() {
   const [fc, setFc] = useState(null);
   const [error, setError] = useState(null);
@@ -101,7 +122,6 @@ export default function RoadPlots() {
   const [addOpen, setAddOpen] = useState(false);
   const [modalRow, setModalRow] = useState(null);
 
-  // delete confirm
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmId, setConfirmId] = useState(null);
 
@@ -109,13 +129,11 @@ export default function RoadPlots() {
   const [geoKey, setGeoKey] = useState(0);
 
   const mapRef = useRef(null);
-  const center = useMemo(() => [15.49492, 120.55533], []);
+  const center = useMemo(() => CEMETERY_CENTER, []);
 
   const auth = getAuth();
   const token = auth?.token;
   const authHeader = token ? { Authorization: `Bearer ${token}` } : {};
-
-  const modalOpen = viewOpen || editOpen || addOpen || confirmOpen;
 
   /* Fetch road plots */
   const fetchPlots = useCallback(async () => {
@@ -294,6 +312,9 @@ export default function RoadPlots() {
     setConfirmOpen(true);
   };
 
+  // Hide/disable background map interactions when editing/adding to avoid multi-map focus & z-index issues
+  const mainMapVisible = !addOpen && !editOpen;
+
   return (
     <div className="p-6 space-y-6">
       {/* shadcn sonner toasts */}
@@ -321,8 +342,7 @@ export default function RoadPlots() {
       {/* Table */}
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
-          <div>
-          </div>
+          <div />
           <div className="flex items-center gap-2">
             <span className="text-sm">Only Available</span>
             <Switch
@@ -430,103 +450,105 @@ export default function RoadPlots() {
         </CardContent>
       </Card>
 
-      {/* Map */}
-      <Card className="overflow-hidden">
-        <CardHeader>
-          <CardTitle>Map</CardTitle>
-          <CardDescription>Interactive road plot map</CardDescription>
-        </CardHeader>
-        <CardContent className={`h-[60vh] ${modalOpen ? "pointer-events-none" : ""}`}>
-          <MapContainer
-            center={center}
-            zoom={19}
-            minZoom={16}
-            maxZoom={22}
-            whenCreated={(map) => (mapRef.current = map)}
-            style={{ width: "100%", height: "100%" }}
-          >
-            <TileLayer
-              attribution="&copy; OpenStreetMap contributors"
-              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+      {/* Main Map — hidden while Add/Edit modal is open */}
+      {mainMapVisible && (
+        <Card className="overflow-hidden">
+          <CardHeader>
+            <CardTitle>Map</CardTitle>
+            <CardDescription>Interactive road plot map</CardDescription>
+          </CardHeader>
+          <CardContent className="h-[60vh]">
+            <MapContainer
+              center={center}
+              zoom={19}
+              minZoom={16}
               maxZoom={22}
-            />
-
-            {filteredFC && (
-              <GeoJSON
-                key={`road-plots-${geoKey}-${onlyAvailable}`}
-                data={filteredFC}
-                style={baseStyle}
-                onEachFeature={(feature, layer) => {
-                  const p = feature.properties || {};
-                  const html = `
-                    <div style="min-width:220px;font-size:12.5px;line-height:1.35">
-                      <div><strong>Section:</strong> ${p.plot_name ?? "-"}</div>
-                      <div><strong>Type:</strong> ${p.plot_type ?? "-"}</div>
-                      <div><strong>Size:</strong> ${p.size_sqm ?? "-"} sqm</div>
-                      <div><strong>Status:</strong> ${p.status ?? "-"}</div>
-                    </div>`;
-                  layer.bindPopup(html);
-                }}
-                pointToLayer={(feature, latlng) =>
-                  L.circleMarker(latlng, { radius: 6, weight: 2, fillOpacity: 0.9, color: "#3b82f6" })
-                }
+              whenCreated={(map) => (mapRef.current = map)}
+              style={{ width: "100%", height: "100%" }}
+            >
+              <TileLayer
+                attribution="&copy; OpenStreetMap contributors"
+                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                maxZoom={22}
               />
-            )}
 
-            {highlightFeature && (
-              <GeoJSON
-                key={hoveredRow?.id || "hover-highlight"}
-                data={highlightFeature}
-                style={() => ({
-                  color: "#0ea5e9",
-                  weight: 4,
-                  opacity: 1,
-                  fillOpacity: 0.15,
-                  fillColor: "#38bdf8",
-                })}
-                pointToLayer={(feature, latlng) =>
-                  L.circleMarker(latlng, {
-                    radius: 10,
-                    weight: 4,
+              {filteredFC && (
+                <GeoJSON
+                  key={`road-plots-${geoKey}-${onlyAvailable}`}
+                  data={filteredFC}
+                  style={baseStyle}
+                  onEachFeature={(feature, layer) => {
+                    const p = feature.properties || {};
+                    const html = `
+                      <div style="min-width:220px;font-size:12.5px;line-height:1.35">
+                        <div><strong>Section:</strong> ${p.plot_name ?? "-"}</div>
+                        <div><strong>Type:</strong> ${p.plot_type ?? "-"}</div>
+                        <div><strong>Size:</strong> ${p.size_sqm ?? "-"} sqm</div>
+                        <div><strong>Status:</strong> ${p.status ?? "-"}</div>
+                      </div>`;
+                    layer.bindPopup(html);
+                  }}
+                  pointToLayer={(feature, latlng) =>
+                    L.circleMarker(latlng, { radius: 6, weight: 2, fillOpacity: 0.9, color: "#3b82f6" })
+                  }
+                />
+              )}
+
+              {highlightFeature && (
+                <GeoJSON
+                  key={hoveredRow?.id || "hover-highlight"}
+                  data={highlightFeature}
+                  style={() => ({
                     color: "#0ea5e9",
+                    weight: 4,
                     opacity: 1,
                     fillOpacity: 0.15,
-                  })
-                }
-              />
-            )}
+                    fillColor: "#38bdf8",
+                  })}
+                  pointToLayer={(feature, latlng) =>
+                    L.circleMarker(latlng, {
+                      radius: 10,
+                      weight: 4,
+                      color: "#0ea5e9",
+                      opacity: 1,
+                      fillOpacity: 0.15,
+                    })
+                  }
+                />
+              )}
 
-            {(() => {
-              const popupRow = hoveredRow || selectedRow || null;
-              const popupPos =
-                popupRow && popupRow.lat != null && popupRow.lng != null
-                  ? [popupRow.lat, popupRow.lng]
-                  : null;
-              if (!popupRow || !popupPos) return null;
-              return (
-                <Popup position={popupPos} autoPan={false} closeButton={false}>
-                  <div className="text-sm space-y-1">
-                    <div>Type: {popupRow.plot_type ?? "-"}</div>
-                    <div>Section: {popupRow.plot_name ?? "-"}</div>
-                    <div>Size: {popupRow.size_sqm ?? "-"} sqm</div>
-                    <div>
-                      Coords:{" "}
-                      {popupRow.lat != null && popupRow.lng != null
-                        ? `${popupRow.lat.toFixed(6)}, ${popupRow.lng.toFixed(6)}`
-                        : "—"}
+              {(() => {
+                const popupRow = hoveredRow || selectedRow || null;
+                const popupPos =
+                  popupRow && popupRow.lat != null && popupRow.lng != null
+                    ? [popupRow.lat, popupRow.lng]
+                    : null;
+                if (!popupRow || !popupPos) return null;
+                return (
+                  <Popup position={popupPos} autoPan={false} closeButton={false}>
+                    <div className="text-sm space-y-1">
+                      <div>Type: {popupRow.plot_type ?? "-"}</div>
+                      <div>Section: {popupRow.plot_name ?? "-"}</div>
+                      <div>Size: {popupRow.size_sqm ?? "-"} sqm</div>
+                      <div>
+                        Coords{" "}
+                        {popupRow.lat != null && popupRow.lng != null
+                          ? `${popupRow.lat.toFixed(6)}, ${popupRow.lng.toFixed(6)}`
+                          : "—"}
+                      </div>
+                      <div>Status: {popupRow.status ?? "-"}</div>
                     </div>
-                    <div>Status: {popupRow.status ?? "-"}</div>
-                  </div>
-                </Popup>
-              );
-            })()}
-          </MapContainer>
-        </CardContent>
-      </Card>
+                  </Popup>
+                );
+              })()}
+            </MapContainer>
+          </CardContent>
+        </Card>
+      )}
 
       {/* View Dialog */}
       <Dialog open={viewOpen} onOpenChange={setViewOpen}>
-        <DialogContent className="z-[2001]">
+        <DialogContent>
           <DialogHeader>
             <DialogTitle>View Road Plot</DialogTitle>
             <DialogDescription>Details of the selected road plot</DialogDescription>
@@ -548,9 +570,9 @@ export default function RoadPlots() {
         </DialogContent>
       </Dialog>
 
-      {/* Edit Dialog */}
+      {/* Edit Dialog (with its own focused map) */}
       <Dialog open={editOpen} onOpenChange={setEditOpen}>
-        <DialogContent className="sm:max-w-[560px] z-[2001]">
+        <DialogContent className="sm:max-w-[720px]">
           <DialogHeader>
             <DialogTitle>Edit Road Plot</DialogTitle>
             <DialogDescription>Update road plot details</DialogDescription>
@@ -637,6 +659,55 @@ export default function RoadPlots() {
                 </div>
               </div>
 
+              {/* Modal-embedded map for picking coordinates */}
+              <div className="space-y-2">
+                <Label>Pick Location on Map</Label>
+                <div className="h-72 rounded-md overflow-hidden border">
+                  <MapContainer
+                    center={
+                      modalRow.latitude && modalRow.longitude
+                        ? [Number(modalRow.latitude), Number(modalRow.longitude)]
+                        : CEMETERY_CENTER
+                    }
+                    zoom={modalRow.latitude && modalRow.longitude ? 20 : 19}
+                    minZoom={17}
+                    maxZoom={22}
+                    bounds={CEMETERY_BOUNDS}
+                    style={{ width: "100%", height: "100%" }}
+                  >
+                    <TileLayer
+                      attribution="&copy; OpenStreetMap contributors"
+                      url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                      maxZoom={22}
+                    />
+                    <CoordinatePicker
+                      active={true}
+                      onPick={(lat, lng) =>
+                        setModalRow((m) =>
+                          m
+                            ? { ...m, latitude: lat.toFixed(6), longitude: lng.toFixed(6) }
+                            : m
+                        )
+                      }
+                    />
+                    {modalRow.latitude !== "" &&
+                      modalRow.longitude !== "" &&
+                      Number.isFinite(Number(modalRow.latitude)) &&
+                      Number.isFinite(Number(modalRow.longitude)) && (
+                        <CircleMarker
+                          center={[Number(modalRow.latitude), Number(modalRow.longitude)]}
+                          radius={8}
+                          weight={3}
+                          opacity={1}
+                          color="#0ea5e9"
+                          fillOpacity={0.25}
+                        />
+                      )}
+                  </MapContainer>
+                </div>
+                <p className="text-xs text-muted-foreground">Click the map to set coordinates.</p>
+              </div>
+
               <DialogFooter className="gap-2 sm:gap-0">
                 <Button type="button" variant="outline" onClick={() => setEditOpen(false)}>
                   Cancel
@@ -648,9 +719,9 @@ export default function RoadPlots() {
         </DialogContent>
       </Dialog>
 
-      {/* Add Dialog */}
+      {/* Add Dialog (with its own focused map) */}
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
-        <DialogContent className="sm:max-w-[560px] z-[2001]">
+        <DialogContent className="sm:max-w-[720px]">
           <DialogHeader>
             <DialogTitle>Add New Road Plot</DialogTitle>
             <DialogDescription>Create a new road plot record</DialogDescription>
@@ -727,6 +798,55 @@ export default function RoadPlots() {
                 </div>
               </div>
 
+              {/* Modal-embedded map for picking coordinates */}
+              <div className="space-y-2">
+                <Label>Pick Location on Map</Label>
+                <div className="h-72 rounded-md overflow-hidden border">
+                  <MapContainer
+                    center={
+                      modalRow.latitude && modalRow.longitude
+                        ? [Number(modalRow.latitude), Number(modalRow.longitude)]
+                        : CEMETERY_CENTER
+                    }
+                    zoom={modalRow.latitude && modalRow.longitude ? 20 : 19}
+                    minZoom={17}
+                    maxZoom={22}
+                    bounds={CEMETERY_BOUNDS}
+                    style={{ width: "100%", height: "100%" }}
+                  >
+                    <TileLayer
+                      attribution="&copy; OpenStreetMap contributors"
+                      url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                      maxZoom={22}
+                    />
+                    <CoordinatePicker
+                      active={true}
+                      onPick={(lat, lng) =>
+                        setModalRow((m) =>
+                          m
+                            ? { ...m, latitude: lat.toFixed(6), longitude: lng.toFixed(6) }
+                            : m
+                        )
+                      }
+                    />
+                    {modalRow.latitude !== "" &&
+                      modalRow.longitude !== "" &&
+                      Number.isFinite(Number(modalRow.latitude)) &&
+                      Number.isFinite(Number(modalRow.longitude)) && (
+                        <CircleMarker
+                          center={[Number(modalRow.latitude), Number(modalRow.longitude)]}
+                          radius={8}
+                          weight={3}
+                          opacity={1}
+                          color="#0ea5e9"
+                          fillOpacity={0.25}
+                        />
+                      )}
+                  </MapContainer>
+                </div>
+                <p className="text-xs text-muted-foreground">Click the map to set coordinates.</p>
+              </div>
+
               <DialogFooter className="gap-2 sm:gap-0">
                 <Button type="button" variant="outline" onClick={() => setAddOpen(false)}>
                   Cancel
@@ -740,7 +860,7 @@ export default function RoadPlots() {
 
       {/* Delete confirmation (shadcn AlertDialog) */}
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <AlertDialogContent className="z-[2001]">
+        <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete this road plot?</AlertDialogTitle>
             <AlertDialogDescription>

@@ -66,8 +66,12 @@ function toDateInputValue(s) {
   return d.toISOString().slice(0, 10);
 }
 
-// Build a JSON payload that includes **all inputs/fields**
+// Build the QR payload: prefer server-provided qr_token; fallback to a local build if missing.
 function buildQrPayload(rec) {
+  const token = typeof rec?.qr_token === "string" ? rec.qr_token.trim() : "";
+  if (token) return token; // use backend-generated payload
+
+  // --- Fallback only if qr_token is empty/unavailable ---
   const clean = (o) =>
     Object.fromEntries(
       Object.entries(o || {}).filter(([, v]) => v !== undefined && v !== null && v !== "")
@@ -82,9 +86,11 @@ function buildQrPayload(rec) {
     birth_date: rec.birth_date ?? null,
     death_date: rec.death_date ?? null,
     burial_date: rec.burial_date ?? null,
-    family_contact: rec.family_contact ?? null, // now the selected visitor id
+    family_contact: rec.family_contact ?? null,
     headstone_type: rec.headstone_type ?? null,
     memorial_text: rec.memorial_text ?? null,
+    lat: rec.lat ?? null,
+    lng: rec.lng ?? null,
     is_active: rec.is_active ?? null,
     created_at: rec.created_at ?? null,
     updated_at: rec.updated_at ?? null,
@@ -465,8 +471,6 @@ export default function BurialRecords() {
       <Card>
         <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <CardTitle>Records</CardTitle>
-            <CardDescription>Search and filter burial records</CardDescription>
           </div>
 
           <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
@@ -495,7 +499,6 @@ export default function BurialRecords() {
 
             {/* Plot filter (by id for now) */}
             <div className="grid gap-1">
-              <Label className="text-xs">Plot</Label>
               <select
                 value={plotFilter}
                 onChange={(e) => setPlotFilter(e.target.value)}

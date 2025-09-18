@@ -1,6 +1,6 @@
 // frontend/src/views/admin/pages/BurialPlots.jsx
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
-import { MapContainer, TileLayer, GeoJSON, Popup } from "react-leaflet";
+import { MapContainer, TileLayer, GeoJSON, Popup, useMapEvents, CircleMarker } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
@@ -68,6 +68,15 @@ import { Toaster, toast } from "sonner";
 const API_BASE =
   (typeof import.meta !== "undefined" && import.meta.env?.VITE_API_BASE_URL) || "";
 
+/* ---------------- Cemetery focus (center & bounds) ---------------- */
+// Center you already used:
+const CEMETERY_CENTER = [15.49492, 120.55533];
+// Optional tighter bounds around the cemetery (adjust as needed)
+const CEMETERY_BOUNDS = L.latLngBounds(
+  [15.4938, 120.5544], // SW
+  [15.4960, 120.5562]  // NE
+);
+
 /* ---------------- utils ---------------- */
 function centroidOfFeature(feature) {
   try {
@@ -82,6 +91,20 @@ function centroidOfFeature(feature) {
   } catch {
     return null;
   }
+}
+
+/* Click-to-pick component: clicking the map sets lat/lng */
+function CoordinatePicker({ active, onPick }) {
+  useMapEvents({
+    click(e) {
+      if (!active) return;
+      const { lat, lng } = e.latlng || {};
+      if (typeof lat === "number" && typeof lng === "number") {
+        onPick(lat, lng);
+      }
+    },
+  });
+  return null;
 }
 
 export default function BurialPlots() {
@@ -106,7 +129,7 @@ export default function BurialPlots() {
   const [geoKey, setGeoKey] = useState(0);
 
   const mapRef = useRef(null);
-  const center = useMemo(() => [15.49492, 120.55533], []);
+  const center = useMemo(() => CEMETERY_CENTER, []);
 
   const auth = getAuth();
   const token = auth?.token;
@@ -286,6 +309,8 @@ export default function BurialPlots() {
     setConfirmOpen(true);
   };
 
+  const mainMapVisible = !addOpen && !editOpen;
+
   return (
     <div className="p-6 space-y-6">
       {/* shadcn sonner toasts */}
@@ -315,8 +340,7 @@ export default function BurialPlots() {
       {/* Table */}
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
-          <div>
-          </div>
+          <div></div>
           <div className="flex items-center gap-2">
             <span className="text-sm">Only Available</span>
             <Switch checked={onlyAvailable} onCheckedChange={setOnlyAvailable} />
@@ -326,7 +350,6 @@ export default function BurialPlots() {
         <CardContent className="overflow-x-auto">
           {/* limit height + vertical scroll */}
           <div className="max-h-[420px] overflow-y-auto rounded-md border border-border">
-
             <Table className="min-w-full">
               {/* sticky header so it remains visible while scrolling */}
               <TableHeader className="sticky top-0 z-10 bg-background">
@@ -351,9 +374,13 @@ export default function BurialPlots() {
                   rows.map((r, idx) => {
                     const s = (r.status || "").toLowerCase();
                     const badgeVariant =
-                      s === "available" ? "success" :
-                      s === "reserved"  ? "warning" :
-                      s === "occupied"  ? "destructive" : "secondary";
+                      s === "available"
+                        ? "success"
+                        : s === "reserved"
+                        ? "warning"
+                        : s === "occupied"
+                        ? "destructive"
+                        : "secondary";
 
                     return (
                       <TableRow
@@ -378,20 +405,29 @@ export default function BurialPlots() {
                           <Button
                             size="sm"
                             variant="outline"
-                            onClick={(e) => { e.stopPropagation(); openView(r); }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openView(r);
+                            }}
                           >
                             <Eye className="h-4 w-4 mr-1" /> View
                           </Button>
                           <Button
                             size="sm"
-                            onClick={(e) => { e.stopPropagation(); openEdit(r); }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openEdit(r);
+                            }}
                           >
                             <Pencil className="h-4 w-4 mr-1" /> Edit
                           </Button>
                           <Button
                             size="sm"
                             variant="destructive"
-                            onClick={(e) => { e.stopPropagation(); confirmDelete(r); }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              confirmDelete(r);
+                            }}
                           >
                             <Trash2 className="h-4 w-4 mr-1" /> Delete
                           </Button>
@@ -406,92 +442,101 @@ export default function BurialPlots() {
         </CardContent>
       </Card>
 
-
-      {/* Map */}
-      <Card className="overflow-hidden">
-        <CardHeader>
-          <CardTitle>Map</CardTitle>
-          <CardDescription>Interactive burial plot map</CardDescription>
-        </CardHeader>
-        <CardContent className="h-[60vh]">
-          <MapContainer
-            center={center}
-            zoom={19}
-            minZoom={16}
-            maxZoom={22}
-            whenCreated={(map) => (mapRef.current = map)}
-            style={{ width: "100%", height: "100%" }}
-          >
-            <TileLayer
-              attribution="&copy; OpenStreetMap contributors"
-              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+      {/* Main Map — hidden while Add/Edit modal is open */}
+      {mainMapVisible && (
+        <Card className="overflow-hidden">
+          <CardHeader>
+            <CardTitle>Map</CardTitle>
+            <CardDescription>Interactive burial plot map</CardDescription>
+          </CardHeader>
+          <CardContent className="h-[60vh]">
+            <MapContainer
+              center={center}
+              zoom={19}
+              minZoom={16}
               maxZoom={22}
-            />
-            {filteredFC && (
-              <GeoJSON
-                key={`plots-${geoKey}-${onlyAvailable}`}
-                data={filteredFC}
-                style={baseStyle}
-                onEachFeature={(feature, layer) => {
-                  const p = feature.properties || {};
-                  const html = `
-                    <div style="min-width:220px;font-size:12.5px;line-height:1.35">
-                      <div><strong>Section:</strong> ${p.plot_name ?? "-"}</div>
-                      <div><strong>Type:</strong> ${p.plot_type ?? "-"}</div>
-                      <div><strong>Size:</strong> ${p.size_sqm ?? "-"} sqm</div>
-                      <div><strong>Status:</strong> ${p.status ?? "-"}</div>
-                    </div>`;
-                  layer.bindPopup(html);
-                }}
-                pointToLayer={(feature, latlng) =>
-                  L.circleMarker(latlng, { radius: 6, weight: 2, fillOpacity: 0.9, color: "#3b82f6" })
-                }
+              whenCreated={(map) => (mapRef.current = map)}
+              style={{ width: "100%", height: "100%" }}
+            >
+              <TileLayer
+                attribution="&copy; OpenStreetMap contributors"
+                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                maxZoom={22}
               />
-            )}
-            {highlightFeature && (
-              <GeoJSON
-                key={hoveredRow?.id || "hover-highlight"}
-                data={highlightFeature}
-                style={() => ({
-                  color: "#0ea5e9",
-                  weight: 4,
-                  opacity: 1,
-                  fillOpacity: 0.15,
-                  fillColor: "#38bdf8",
-                })}
-                pointToLayer={(feature, latlng) =>
-                  L.circleMarker(latlng, { radius: 10, weight: 4, color: "#0ea5e9", opacity: 1, fillOpacity: 0.15 })
-                }
-              />
-            )}
 
-            {(() => {
-              const popupRow = hoveredRow || selectedRow || null;
-              const popupPos =
-                popupRow && popupRow.lat != null && popupRow.lng != null
-                  ? [popupRow.lat, popupRow.lng]
-                  : null;
-              if (!popupRow || !popupPos) return null;
-              return (
-                <Popup position={popupPos} autoPan={false} closeButton={false}>
-                  <div className="text-sm space-y-1">
-                    <div>Type: {popupRow.plot_type ?? "-"}</div>
-                    <div>Section: {popupRow.plot_name ?? "-"}</div>
-                    <div>Size: {popupRow.size_sqm ?? "-"} sqm</div>
-                    <div>
-                      Coords:{" "}
-                      {popupRow.lat && popupRow.lng
-                        ? `${popupRow.lat.toFixed(6)}, ${popupRow.lng.toFixed(6)}`
-                        : "—"}
+              {filteredFC && (
+                <GeoJSON
+                  key={`plots-${geoKey}-${onlyAvailable}`}
+                  data={filteredFC}
+                  style={baseStyle}
+                  onEachFeature={(feature, layer) => {
+                    const p = feature.properties || {};
+                    const html = `
+                      <div style="min-width:220px;font-size:12.5px;line-height:1.35">
+                        <div><strong>Section:</strong> ${p.plot_name ?? "-"}</div>
+                        <div><strong>Type:</strong> ${p.plot_type ?? "-"}</div>
+                        <div><strong>Size:</strong> ${p.size_sqm ?? "-"} sqm</div>
+                        <div><strong>Status:</strong> ${p.status ?? "-"}</div>
+                      </div>`;
+                    layer.bindPopup(html);
+                  }}
+                  pointToLayer={(feature, latlng) =>
+                    L.circleMarker(latlng, { radius: 6, weight: 2, fillOpacity: 0.9, color: "#3b82f6" })
+                  }
+                />
+              )}
+
+              {highlightFeature && (
+                <GeoJSON
+                  key={hoveredRow?.id || "hover-highlight"}
+                  data={highlightFeature}
+                  style={() => ({
+                    color: "#0ea5e9",
+                    weight: 4,
+                    opacity: 1,
+                    fillOpacity: 0.15,
+                    fillColor: "#38bdf8",
+                  })}
+                  pointToLayer={(feature, latlng) =>
+                    L.circleMarker(latlng, {
+                      radius: 10,
+                      weight: 4,
+                      color: "#0ea5e9",
+                      opacity: 1,
+                      fillOpacity: 0.15,
+                    })
+                  }
+                />
+              )}
+
+              {(() => {
+                const popupRow = hoveredRow || selectedRow || null;
+                const popupPos =
+                  popupRow && popupRow.lat != null && popupRow.lng != null
+                    ? [popupRow.lat, popupRow.lng]
+                    : null;
+                if (!popupRow || !popupPos) return null;
+                return (
+                  <Popup position={popupPos} autoPan={false} closeButton={false}>
+                    <div className="text-sm space-y-1">
+                      <div>Type: {popupRow.plot_type ?? "-"}</div>
+                      <div>Section: {popupRow.plot_name ?? "-"}</div>
+                      <div>Size: {popupRow.size_sqm ?? "-"} sqm</div>
+                      <div>
+                        Coords:{" "}
+                        {popupRow.lat && popupRow.lng
+                          ? `${popupRow.lat.toFixed(6)}, ${popupRow.lng.toFixed(6)}`
+                          : "—"}
+                      </div>
+                      <div>Status: {popupRow.status ?? "-"}</div>
                     </div>
-                    <div>Status: {popupRow.status ?? "-"}</div>
-                  </div>
-                </Popup>
-              );
-            })()}
-          </MapContainer>
-        </CardContent>
-      </Card>
+                  </Popup>
+                );
+              })()}
+            </MapContainer>
+          </CardContent>
+        </Card>
+      )}
 
       {/* View Dialog */}
       <Dialog open={viewOpen} onOpenChange={setViewOpen}>
@@ -502,10 +547,18 @@ export default function BurialPlots() {
           </DialogHeader>
           {modalRow && (
             <div className="grid gap-3 text-sm">
-              <div><strong>Name:</strong> {modalRow.plot_name ?? "—"}</div>
-              <div><strong>Type:</strong> {modalRow.plot_type ?? "—"}</div>
-              <div><strong>Size:</strong> {modalRow.size_sqm ?? "—"} sqm</div>
-              <div><strong>Status:</strong> {modalRow.status ?? "—"}</div>
+              <div>
+                <strong>Name:</strong> {modalRow.plot_name ?? "—"}
+              </div>
+              <div>
+                <strong>Type:</strong> {modalRow.plot_type ?? "—"}
+              </div>
+              <div>
+                <strong>Size:</strong> {modalRow.size_sqm ?? "—"} sqm
+              </div>
+              <div>
+                <strong>Status:</strong> {modalRow.status ?? "—"}
+              </div>
               <div>
                 <strong>Coords:</strong>{" "}
                 {modalRow.lat != null && modalRow.lng != null
@@ -517,9 +570,9 @@ export default function BurialPlots() {
         </DialogContent>
       </Dialog>
 
-      {/* Edit Dialog */}
+      {/* Edit Dialog (with its own focused map) */}
       <Dialog open={editOpen} onOpenChange={setEditOpen}>
-        <DialogContent className="sm:max-w-[560px]">
+        <DialogContent className="sm:max-w-[720px]">
           <DialogHeader>
             <DialogTitle>Edit Plot</DialogTitle>
             <DialogDescription>Update burial plot details</DialogDescription>
@@ -607,6 +660,51 @@ export default function BurialPlots() {
                 </div>
               </div>
 
+              {/* Modal-embedded map for picking coordinates */}
+              <div className="space-y-2">
+                <Label>Pick Location on Map</Label>
+                <div className="h-72 rounded-md overflow-hidden border">
+                  <MapContainer
+                    center={
+                      modalRow.latitude && modalRow.longitude
+                        ? [Number(modalRow.latitude), Number(modalRow.longitude)]
+                        : CEMETERY_CENTER
+                    }
+                    zoom={modalRow.latitude && modalRow.longitude ? 20 : 19}
+                    minZoom={17}
+                    maxZoom={22}
+                    bounds={CEMETERY_BOUNDS}
+                    style={{ width: "100%", height: "100%" }}
+                  >
+                    <TileLayer
+                      attribution="&copy; OpenStreetMap contributors"
+                      url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                      maxZoom={22}
+                    />
+                    <CoordinatePicker
+                      active={true}
+                      onPick={(lat, lng) =>
+                        setModalRow((m) => (m ? { ...m, latitude: lat.toFixed(6), longitude: lng.toFixed(6) } : m))
+                      }
+                    />
+                    {modalRow.latitude !== "" &&
+                      modalRow.longitude !== "" &&
+                      Number.isFinite(Number(modalRow.latitude)) &&
+                      Number.isFinite(Number(modalRow.longitude)) && (
+                        <CircleMarker
+                          center={[Number(modalRow.latitude), Number(modalRow.longitude)]}
+                          radius={8}
+                          weight={3}
+                          opacity={1}
+                          color="#0ea5e9"
+                          fillOpacity={0.25}
+                        />
+                      )}
+                  </MapContainer>
+                </div>
+                <p className="text-xs text-muted-foreground">Click the map to set coordinates.</p>
+              </div>
+
               <DialogFooter className="gap-2 sm:gap-0">
                 <Button type="button" variant="outline" onClick={() => setEditOpen(false)}>
                   Cancel
@@ -618,9 +716,9 @@ export default function BurialPlots() {
         </DialogContent>
       </Dialog>
 
-      {/* Add Dialog */}
+      {/* Add Dialog (with its own focused map) */}
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
-        <DialogContent className="sm:max-w-[560px]">
+        <DialogContent className="sm:max-w-[720px]">
           <DialogHeader>
             <DialogTitle>Add New Plot</DialogTitle>
             <DialogDescription>Create a new burial plot record</DialogDescription>
@@ -695,6 +793,51 @@ export default function BurialPlots() {
                     onChange={(e) => setModalRow((m) => ({ ...m, longitude: e.target.value }))}
                   />
                 </div>
+              </div>
+
+              {/* Modal-embedded map for picking coordinates */}
+              <div className="space-y-2">
+                <Label>Pick Location on Map</Label>
+                <div className="h-72 rounded-md overflow-hidden border">
+                  <MapContainer
+                    center={
+                      modalRow.latitude && modalRow.longitude
+                        ? [Number(modalRow.latitude), Number(modalRow.longitude)]
+                        : CEMETERY_CENTER
+                    }
+                    zoom={modalRow.latitude && modalRow.longitude ? 20 : 19}
+                    minZoom={17}
+                    maxZoom={22}
+                    bounds={CEMETERY_BOUNDS}
+                    style={{ width: "100%", height: "100%" }}
+                  >
+                    <TileLayer
+                      attribution="&copy; OpenStreetMap contributors"
+                      url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                      maxZoom={22}
+                    />
+                    <CoordinatePicker
+                      active={true}
+                      onPick={(lat, lng) =>
+                        setModalRow((m) => (m ? { ...m, latitude: lat.toFixed(6), longitude: lng.toFixed(6) } : m))
+                      }
+                    />
+                    {modalRow.latitude !== "" &&
+                      modalRow.longitude !== "" &&
+                      Number.isFinite(Number(modalRow.latitude)) &&
+                      Number.isFinite(Number(modalRow.longitude)) && (
+                        <CircleMarker
+                          center={[Number(modalRow.latitude), Number(modalRow.longitude)]}
+                          radius={8}
+                          weight={3}
+                          opacity={1}
+                          color="#0ea5e9"
+                          fillOpacity={0.25}
+                        />
+                      )}
+                  </MapContainer>
+                </div>
+                <p className="text-xs text-muted-foreground">Click the map to set coordinates.</p>
               </div>
 
               <DialogFooter className="gap-2 sm:gap-0">

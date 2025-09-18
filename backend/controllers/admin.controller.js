@@ -243,11 +243,12 @@ const editBuildingPlots = BuildingHandlers.edit;
 const deleteBuildingPlots = BuildingHandlers.del;
 
 function clean(obj) {
-  // keep falsy like 0/false/''; drop only undefined/null
+  // keep falsy like 0/false/''/null; drop only undefined
   return Object.fromEntries(
-    Object.entries(obj || {}).filter(([, v]) => v !== undefined && v !== null)
+    Object.entries(obj || {}).filter(([, v]) => v !== undefined)
   );
 }
+
 
 function buildQrPayload(snapshot) {
   // Include ALL inputs you care about in the QR
@@ -274,13 +275,22 @@ function buildQrPayload(snapshot) {
 }
 
 async function getPlotLatLng(plotId) {
-  if (!plotId) return { lat: undefined, lng: undefined };
+  if (!plotId) return { lat: null, lng: null };
+
   const { rows } = await pool.query(
-    `SELECT ST_Y(coordinates) AS lat, ST_X(coordinates) AS lng FROM plots WHERE id = $1 LIMIT 1`,
+    `
+    SELECT
+      COALESCE(ST_Y(coordinates::geometry), NULL) AS lat,
+      COALESCE(ST_X(coordinates::geometry), NULL) AS lng
+    FROM plots
+    WHERE id = $1
+    LIMIT 1
+    `,
     [plotId]
   );
-  if (rows.length === 0) return { lat: undefined, lng: undefined };
-  return { lat: rows[0].lat, lng: rows[0].lng };
+
+  if (rows.length === 0) return { lat: null, lng: null };
+  return { lat: rows[0].lat ?? null, lng: rows[0].lng ?? null };
 }
 
 
@@ -340,7 +350,15 @@ async function addBurialRecord(req, res, next) {
 
     // ensure plot exists + get coordinates
     const { rows: plotRows } = await pool.query(
-      `SELECT id, ST_Y(coordinates) AS lat, ST_X(coordinates) AS lng FROM plots WHERE id = $1 LIMIT 1`,
+      `
+      SELECT
+        id,
+        COALESCE(ST_Y(coordinates::geometry), NULL) AS lat,
+        COALESCE(ST_X(coordinates::geometry), NULL) AS lng
+      FROM plots
+      WHERE id = $1
+      LIMIT 1
+      `,
       [plot_id]
     );
     if (plotRows.length === 0) return res.status(404).json({ error: "Plot not found" });

@@ -1,651 +1,371 @@
 // frontend/src/views/visitor/pages/SearchForDeceased.jsx
-import { useEffect, useMemo, useRef, useState } from "react";
-import { NavLink } from "react-router-dom";
-import fetchBurialRecords from "../js/get-burial-records";
-
+import { useEffect, useRef, useState } from "react";
 import "leaflet/dist/leaflet.css";
-import "leaflet-routing-machine/dist/leaflet-routing-machine.css";
+import { fetchRoadPlots, buildGraph, dijkstra } from "../js/dijkstra-pathfinding";
 
-// shadcn/ui (only components you actually have)
-import { Button } from "../../../components/ui/button";
-import { Input } from "../../../components/ui/input";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../../../components/ui/card";
-import { Separator } from "../../../components/ui/separator";
-import {
-  Table, TableHeader, TableRow, TableHead, TableBody, TableCell,
-} from "../../../components/ui/table";
-import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
-} from "../../../components/ui/dialog";
-import { Avatar, AvatarFallback } from "../../../components/ui/avatar";
+// --- Destination (grave location) ---
+const DEST = { lat: 15.4950946637584, lng: 120.5548330086766 };
 
-function formatDate(s) {
-  if (!s) return "—";
-  const d = new Date(s);
-  if (Number.isNaN(d.getTime())) return s;
-  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "2-digit" });
+// --- 3-point mock "live" location series (cycles every 3s) ---
+const MOCK_POINTS = [
+  { lat: 15.4943159, lng: 120.5548342 },
+  { lat: 15.4944027, lng: 120.5549954 },
+  { lat: 15.4945023, lng: 120.5549123 },
+];
+const MOCK_INTERVAL_MS = 3000;
+
+// ---------- helpers ----------
+function haversineMeters(a, b) {
+  const R = 6371000;
+  const toRad = (x) => (x * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+const fmt = (m) => (m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${Math.round(m)} m`);
+
+// project P onto infinite line AB; returns {t in R, point:{lat,lng}}
+function projectPoint(A, B, P) {
+  const ax = A.lng, ay = A.lat;
+  const bx = B.lng, by = B.lat;
+  const px = P.lng, py = P.lat;
+  const vx = bx - ax, vy = by - ay;
+  const wx = px - ax, wy = py - ay;
+  const denom = vx * vx + vy * vy || 1e-12;
+  const t = (wx * vx + wy * vy) / denom;
+  return { t, point: { lat: ay + t * vy, lng: ax + t * vx } };
 }
 
-function parseLatLngFromToken(token) {
-  if (!token) return null;
-  const t = String(token);
+// ---------- tail cut ----------
+function cutPolylineAtProjection(poly, dest, lookbackSegments = 8, maxPerpMeters = 12) {
+  if (!poly || poly.length < 2) return poly;
 
-  const mKVLat = t.match(/(?:^|\|)lat:([+-]?\d+(?:\.\d+)?)(?:\||$)/i);
-  const mKVLng = t.match(/(?:^|\|)lng:([+-]?\d+(?:\.\d+)?)(?:\||$)/i);
-  if (mKVLat && mKVLng) {
-    const lat = Number(mKVLat[1]); const lng = Number(mKVLng[1]);
-    if (Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng };
+  const startIdx = Math.max(0, poly.length - 1 - lookbackSegments);
+  let best = null;
+  for (let i = poly.length - 2; i >= startIdx; i--) {
+    const A = { lat: poly[i][0], lng: poly[i][1] };
+    const B = { lat: poly[i + 1][0], lng: poly[i + 1][1] };
+    const { t, point } = projectPoint(A, B, dest);
+    if (t >= 0 && t <= 1) {
+      const perp = haversineMeters(point, dest);
+      if (perp <= maxPerpMeters && (!best || perp < best.perp)) {
+        best = { idx: i, point, perp };
+      }
+    }
   }
 
-  const mUrlLat = t.match(/[?&]lat=([+-]?\d+(?:\.\d+)?)/i);
-  const mUrlLng = t.match(/[?&]lng=([+-]?\d+(?:\.\d+)?)/i);
-  if (mUrlLat && mUrlLng) {
-    const lat = Number(mUrlLat[1]); const lng = Number(mUrlLng[1]);
-    if (Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng };
+  if (!best) {
+    const i = poly.length - 2;
+    const A = { lat: poly[i][0], lng: poly[i][1] };
+    const B = { lat: poly[i + 1][0], lng: poly[i + 1][1] };
+    const dA = haversineMeters(A, dest);
+    const dB = haversineMeters(B, dest);
+    if (dB > dA) {
+      const { t, point } = projectPoint(A, B, dest);
+      const tc = Math.min(1, Math.max(0, t));
+      const P = { lat: A.lat + (B.lat - A.lat) * tc, lng: A.lng + (B.lng - A.lng) * tc };
+      const next = poly.slice(0, poly.length - 1);
+      next[next.length - 1] = [P.lat, P.lng];
+      return next;
+    }
+    return poly;
   }
 
-  const mPoint = t.match(/POINT\s*\(\s*([+-]?\d+(?:\.\d+)?)\s+([+-]?\d+(?:\.\d+)?)\s*\)/i);
-  if (mPoint) {
-    const lng = Number(mPoint[1]); const lat = Number(mPoint[2]);
-    if (Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng };
+  const trimmed = poly.slice(0, best.idx + 1);
+  trimmed.push([best.point.lat, best.point.lng]);
+  return trimmed;
+}
+
+// ---------- OSRM per-leg with cache ----------
+const CACHE_NS = "osrm_leg_cache_v1";
+const CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 7;
+const memCache = new Map();
+
+function key5([lat, lng]) { return `${lat.toFixed(5)},${lng.toFixed(5)}`; }
+function loadLocal(key) {
+  try {
+    const raw = localStorage.getItem(CACHE_NS);
+    if (!raw) return null;
+    const store = JSON.parse(raw);
+    const rec = store[key];
+    if (!rec) return null;
+    if (Date.now() > rec.exp) return null;
+    return rec.data;
+  } catch { return null; }
+}
+function saveLocal(key, data) {
+  try {
+    const raw = localStorage.getItem(CACHE_NS);
+    const store = raw ? JSON.parse(raw) : {};
+    store[key] = { data, exp: Date.now() + CACHE_TTL_MS };
+    const keys = Object.keys(store);
+    if (keys.length > 300) keys.slice(0, keys.length - 300).forEach((k) => delete store[k]);
+    localStorage.setItem(CACHE_NS, JSON.stringify(store));
+  } catch (err) { console.error("localStorage write failed", err); }
+}
+async function getLegCached(a, b) {
+  const k = `${key5(a)}|${key5(b)}`;
+  if (memCache.has(k)) return memCache.get(k);
+  const local = loadLocal(k);
+  if (local) { memCache.set(k, local); return local; }
+  const url =
+    `https://router.project-osrm.org/route/v1/foot/${a[1]},${a[0]};${b[1]},${b[0]}` +
+    `?overview=full&geometries=geojson&steps=false&continue_straight=true`;
+  let result = null;
+  try {
+    const res = await fetch(url);
+    if (res.ok) {
+      const json = await res.json();
+      const coords = json?.routes?.[0]?.geometry?.coordinates;
+      if (Array.isArray(coords) && coords.length) result = coords.map(([lng, lat]) => [lat, lng]);
+    }
+  } catch {}
+  if (!result) result = [a, b];
+  memCache.set(k, result);
+  saveLocal(k, result);
+  return result;
+}
+
+// ---------- NEW robust head builder ----------
+/**
+ * Build route from user to nodes:
+ * 1) Build node→node OSRM polyline (legsNodes).
+ * 2) Compute cumulative distance along legsNodes; use this to restrict to the
+ *    first `lookaheadMeters` as the “early window”.
+ * 3) Try to project USER onto any segment inside that early window (≤ projTolM).
+ *    If found, splice USER→projection→(rest).
+ * 4) Otherwise, OSRM USER→each node whose mapped along-route distance ≤ lookaheadMeters,
+ *    pick the shortest leg, then join at the nearest vertex index on legsNodes.
+ */
+async function buildRouteFromUser(user, nodes, { lookaheadMeters = 140, projTolM = 22 } = {}) {
+  // 1) node→node OSRM expanded polyline
+  const legsNodes = [];
+  for (let i = 0; i < nodes.length - 1; i++) {
+    // eslint-disable-next-line no-await-in-loop
+    const seg = await getLegCached(nodes[i], nodes[i + 1]);
+    if (i === 0) legsNodes.push(...seg);
+    else legsNodes.push(...seg.slice(1));
   }
-  return null;
+
+  // 2) cumulative along-route distance over legsNodes
+  const cum = [0];
+  for (let i = 1; i < legsNodes.length; i++) {
+    cum[i] = cum[i - 1] + haversineMeters(
+      { lat: legsNodes[i - 1][0], lng: legsNodes[i - 1][1] },
+      { lat: legsNodes[i][0], lng: legsNodes[i][1] }
+    );
+  }
+
+  // helper: find nearest vertex index on legsNodes to a point
+  const nearestVertexIdx = (pt) => {
+    let bestI = 0, bestD = Infinity;
+    for (let i = 0; i < legsNodes.length; i++) {
+      const d = haversineMeters({ lat: legsNodes[i][0], lng: legsNodes[i][1] }, pt);
+      if (d < bestD) { bestD = d; bestI = i; }
+      if (cum[i] > lookaheadMeters) break; // only need early window for attach
+    }
+    return bestI;
+  };
+
+  // 3) try projection onto early window of legsNodes
+  for (let i = 0; i < legsNodes.length - 1; i++) {
+    if (cum[i] > lookaheadMeters) break;
+    const A = { lat: legsNodes[i][0], lng: legsNodes[i][1] };
+    const B = { lat: legsNodes[i + 1][0], lng: legsNodes[i + 1][1] };
+    const { t, point } = projectPoint(A, B, user);
+    if (t >= 0 && t <= 1) {
+      const perp = haversineMeters(point, user);
+      if (perp <= projTolM) {
+        const head = [[user.lat, user.lng], [point.lat, point.lng]];
+        const tail = legsNodes.slice(i + 1);
+        if (tail.length) tail[0] = [point.lat, point.lng];
+        return [...head, ...tail];
+      }
+    }
+  }
+
+  // 4) fallback: OSRM to candidate nodes whose along-route position is early
+  // map each node to its nearest vertex index to know its along-route distance
+  const nodeToAlongDist = (node) => {
+    const j = nearestVertexIdx({ lat: node[0], lng: node[1] });
+    return { j, dist: cum[j] };
+  };
+  const candidates = [];
+  for (let i = 0; i < nodes.length; i++) {
+    const { j, dist } = nodeToAlongDist(nodes[i]);
+    if (dist <= lookaheadMeters) candidates.push({ nodeIdx: i, vertexIdx: j });
+    else break;
+    if (candidates.length >= 6) break; // cap attempts
+  }
+  if (candidates.length === 0) candidates.push({ nodeIdx: 0, vertexIdx: 0 });
+
+  let best = null; // {nodeIdx, vertexIdx, leg, length}
+  for (const c of candidates) {
+    // eslint-disable-next-line no-await-in-loop
+    const leg = await getLegCached([user.lat, user.lng], nodes[c.nodeIdx]);
+    let len = 0;
+    for (let k = 0; k < leg.length - 1; k++) {
+      len += haversineMeters(
+        { lat: leg[k][0], lng: leg[k][1] },
+        { lat: leg[k + 1][0], lng: leg[k + 1][1] }
+      );
+    }
+    if (!best || len < best.length) best = { ...c, leg, length: len };
+  }
+
+  // join at the *vertexIdx* (nearest vertex inside early window), not by exact coord
+  const stitched = [...best.leg, ...legsNodes.slice(best.vertexIdx + 1)];
+  return stitched;
 }
 
 export default function SearchForDeceased() {
-  const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-
-  const [q, setQ] = useState("");
-  const [page, setPage] = useState(1);
-  const pageSize = 10;
-
-  // scanning/result
-  const [scanResult, setScanResult] = useState(null); // { token, coords? }
-
   const mapRef = useRef(null);
-  const leafletRef = useRef({
-    L: null,
-    map: null,
-    marker: null,
-    routing: null,
-    routingLoaded: false,
-  });
+  const refs = useRef({ L: null, map: null, startM: null, destM: null, line: null });
+  const [status, setStatus] = useState("Loading…");
+  const [distance, setDistance] = useState(0);
+  const [location, setLocation] = useState(MOCK_POINTS[0]);
+  const [idx, setIdx] = useState(0);
 
-  // fixed starting point for route
-  const START = { lat: 15.4953425, lng: 120.556059 };
-
-  // modal state
-  const [scanModalOpen, setScanModalOpen] = useState(false);
-  const [scanMode, setScanMode] = useState("choose"); // "choose" | "camera" | "upload"
-  const [scanning, setScanning] = useState(false);
-  const [scanErr, setScanErr] = useState("");
-  const videoRef = useRef(null);
-  const rafRef = useRef(0);
-  const fileRef = useRef(null);
-
+  // cycle through the 3 mock points every 3s
   useEffect(() => {
-    let ignore = false;
-    setLoading(true);
-    setError("");
-    fetchBurialRecords()
-      .then((data) => !ignore && setRows(Array.isArray(data) ? data : []))
-      .catch((e) => !ignore && setError(e.message || "Failed to load"))
-      .finally(() => !ignore && setLoading(false));
-    return () => { ignore = true; };
-  }, []);
-
-  const filtered = useMemo(() => {
-    const text = q.trim().toLowerCase();
-    if (!text) return rows;
-    return rows.filter((r) => {
-      const plot = String(r.plot_id ?? "").toLowerCase();
-      const name = String(r.deceased_name ?? "").toLowerCase();
-      const bd = String(formatDate(r.birth_date)).toLowerCase();
-      const dd = String(formatDate(r.death_date)).toLowerCase();
-      return plot.includes(text) || name.includes(text) || bd.includes(text) || dd.includes(text);
-    });
-  }, [rows, q]);
-
-  const total = filtered.length;
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  useEffect(() => { if (page > totalPages) setPage(1); }, [totalPages, page]);
-
-  const pageRows = useMemo(() => {
-    const start = (page - 1) * pageSize;
-    return filtered.slice(start, start + pageSize);
-  }, [filtered, page]);
-
-  const from = total === 0 ? 0 : (page - 1) * pageSize + 1;
-  const to = Math.min(total, page * pageSize);
-
-  // cleanup (camera)
-  useEffect(() => {
-    return () => { stopCamera(); };
-  }, []);
-
-  function closeScanModal() {
-    stopCamera();
-    setScanErr("");
-    setScanMode("choose");
-    setScanModalOpen(false);
-  }
-
-  async function startCamera() {
-    setScanErr("");
-    setScanMode("camera");
-    setScanning(true);
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-      const v = videoRef.current; if (!v) return;
-      v.srcObject = stream; await v.play();
-
-      if ("BarcodeDetector" in window) {
-        const detector = new window.BarcodeDetector({ formats: ["qr_code"] });
-        const tick = async () => {
-          try {
-            const codes = await detector.detect(v);
-            if (codes && codes.length) {
-              handleQrFound(codes[0].rawValue || "");
-              return;
-            }
-          } catch {}
-          rafRef.current = requestAnimationFrame(tick);
-        };
-        rafRef.current = requestAnimationFrame(tick);
-      } else {
-        const { BrowserMultiFormatReader } = await import("@zxing/browser");
-        const reader = new BrowserMultiFormatReader();
-        reader.decodeFromVideoDevice(null, v, (result) => {
-          if (result) {
-            reader.reset();
-            handleQrFound(result.getText());
-          }
-        }).catch(() => {});
-      }
-    } catch (e) {
-      setScanErr("Unable to access camera.");
-      setScanning(false);
-    }
-  }
-
-  function stopCamera() {
-    cancelAnimationFrame(rafRef.current);
-    const v = videoRef.current;
-    if (v?.srcObject) {
-      v.srcObject.getTracks?.().forEach((t) => t.stop?.());
-      v.srcObject = null;
-    }
-    setScanning(false);
-  }
-
-  async function handleUploadFile(file) {
-    if (!file) return;
-    setScanErr("");
-    setScanMode("upload");
-
-    const url = URL.createObjectURL(file);
-    const cleanup = () => URL.revokeObjectURL(url);
-
-    try {
-      const img = await new Promise((resolve, reject) => {
-        const el = new Image();
-        el.onload = () => resolve(el);
-        el.onerror = () => reject(new Error("Could not load image."));
-        el.src = url;
+    setLocation(MOCK_POINTS[0]);
+    setIdx(0);
+    const t = setInterval(() => {
+      setIdx((p) => {
+        const next = (p + 1) % MOCK_POINTS.length;
+        setLocation(MOCK_POINTS[next]);
+        return next;
       });
+    }, MOCK_INTERVAL_MS);
+    return () => clearInterval(t);
+  }, []);
 
-      const tryBarcodeDetector = async (source) => {
-        if (!("BarcodeDetector" in window)) return null;
-        try {
-          const supported = await window.BarcodeDetector.getSupportedFormats?.();
-          if (Array.isArray(supported) && !supported.includes("qr_code")) return null;
-        } catch {}
-        const det = new window.BarcodeDetector({ formats: ["qr_code"] });
+  async function ensureLeaflet() {
+    if (!refs.current.L) {
+      const mod = await import("leaflet");
+      refs.current.L = mod.default || mod;
+    }
+    return refs.current.L;
+  }
 
-        const buildCanvas = (el, rotationDeg = 0, scale = 1) => {
-          const w = (el.naturalWidth || el.width) * scale;
-          const h = (el.naturalHeight || el.height) * scale;
-          const canvas = document.createElement("canvas");
-          const rot = ((rotationDeg % 360) + 360) % 360;
-          const cw = rot === 90 || rot === 270 ? h : w;
-          const ch = rot === 90 || rot === 270 ? w : h;
-          canvas.width = cw;
-          canvas.height = ch;
-          const ctx = canvas.getContext("2d");
-          ctx.imageSmoothingEnabled = false;
-          ctx.translate(cw / 2, ch / 2);
-          ctx.rotate((rot * Math.PI) / 180);
-          ctx.drawImage(el, -w / 2, -h / 2, w, h);
-          return canvas;
-        };
+  // recompute route on every location update
+  useEffect(() => {
+    if (!location) return;
+    let alive = true;
 
-        try {
-          const codes = await det.detect(source);
-          if (codes && codes.length) return codes[0].rawValue || null;
-        } catch {}
+    (async () => {
+      const L = await ensureLeaflet();
+      if (!alive) return;
 
-        const scales = [1.5, 2];
-        const rotations = [0, 90, 180, 270];
-        for (const s of scales) {
-          for (const r of rotations) {
-            try {
-              const canvas = buildCanvas(source, r, s);
-              const codes = await det.detect(canvas);
-              if (codes && codes.length) return codes[0].rawValue || null;
-            } catch {}
-          }
+      // init map once
+      if (!refs.current.map) {
+        const map = L.map(mapRef.current).setView([location.lat, location.lng], 17);
+        refs.current.map = map;
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          maxZoom: 20,
+          attribution: "&copy; OpenStreetMap",
+        }).addTo(map);
+        refs.current.destM = L.marker([DEST.lat, DEST.lng]).addTo(map);
+      }
+
+      // move/update start marker
+      if (refs.current.startM) refs.current.startM.setLatLng([location.lat, location.lng]);
+      else {
+        refs.current.startM = refs.current.L
+          .circleMarker([location.lat, location.lng], {
+            radius: 6,
+            color: "#0ea5e9",
+            weight: 2,
+            fillOpacity: 0.6,
+          })
+          .addTo(refs.current.map);
+      }
+
+      // 1) build graph
+      setStatus("Building cemetery graph…");
+      const features = await fetchRoadPlots();
+      const graph = buildGraph(features, { k: 7, maxDist: 110 });
+      const nodeKeys = Object.keys(graph);
+      if (!nodeKeys.length) return setStatus("No internal graph nodes.");
+
+      const nearestKey = (pt) => {
+        let best = null, bestD = Infinity;
+        for (const k of nodeKeys) {
+          const [lat, lng] = k.split(",").map(Number);
+          const d = haversineMeters(pt, { lat, lng });
+          if (d < bestD) { bestD = d; best = k; }
         }
-        return null;
+        return best;
       };
 
-      const bdValue = await tryBarcodeDetector(img);
-      if (bdValue) {
-        handleQrFound(bdValue);
-        cleanup();
-        return;
+      // 2) snap + dijkstra
+      const startKey = nearestKey(location);
+      const endKey = nearestKey(DEST);
+      setStatus("Running Dijkstra…");
+      const keys = dijkstra(graph, startKey, endKey);
+      if (!keys.length) return setStatus("No internal path found.");
+
+      const nodes = keys.map((k) => k.split(",").map(Number)).map(([lat, lng]) => [lat, lng]);
+
+      // 3) Build head robustly (early-window projection; else best early node)
+      setStatus("Stitching legs…");
+      let legs = await buildRouteFromUser({ lat: location.lat, lng: location.lng }, nodes, {
+        lookaheadMeters: 140,
+        projTolM: 22,
+      });
+
+      // 4) Trim tail inline with destination
+      legs = cutPolylineAtProjection(legs, DEST, 8, 12);
+
+      // 5) distance + draw
+      let meters = 0;
+      for (let i = 0; i < legs.length - 1; i++) {
+        meters += haversineMeters(
+          { lat: legs[i][0], lng: legs[i][1] },
+          { lat: legs[i + 1][0], lng: legs[i + 1][1] }
+        );
       }
+      setDistance(meters);
 
-      try {
-        const { BrowserQRCodeReader } = await import("@zxing/browser");
-        const zxing = new BrowserQRCodeReader();
-        const result = await zxing.decodeFromImageElement(img);
-        if (result?.getText) {
-          handleQrFound(result.getText());
-          cleanup();
-          return;
-        }
-      } catch {}
+      if (refs.current.line) refs.current.map.removeLayer(refs.current.line);
+      refs.current.line = refs.current.L
+        .polyline(legs, { weight: 6, opacity: 0.95, color: "#059669" })
+        .addTo(refs.current.map);
 
-      try {
-        const jsqr = (await import("jsqr")).default;
-        const scanWithJsQR = (canvas, invert = false, threshold = false) => {
-          const ctx = canvas.getContext("2d", { willReadFrequently: true });
-          let imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-          if (invert) {
-            const d = imgData.data;
-            for (let i = 0; i < d.length; i += 4) {
-              d[i] = 255 - d[i];
-              d[i + 1] = 255 - d[i + 1];
-              d[i + 2] = 255 - d[i + 2];
-            }
-          }
-          if (threshold) {
-            const d = imgData.data;
-            for (let i = 0; i < d.length; i += 4) {
-              const v = (d[i] + d[i + 1] + d[i + 2]) / 3;
-              const t = v > 160 ? 255 : 0;
-              d[i] = d[i + 1] = d[i + 2] = t;
-            }
-          }
-          if (invert || threshold) ctx.putImageData(imgData, 0, 0);
-          const code = jsqr(imgData.data, canvas.width, canvas.height, { inversionAttempts: "attemptBoth" });
-          return code?.data || null;
-        };
+      refs.current.map.fitBounds(L.latLngBounds(legs), { padding: [24, 24] });
+      setStatus("Route ready (stable head & trimmed tail)");
+    })();
 
-        const makeCanvas = (el, rot = 0, scale = 2) => {
-          const w = (el.naturalWidth || el.width) * scale;
-          const h = (el.naturalHeight || el.height) * scale;
-          const rotNorm = ((rot % 360) + 360) % 360;
-          const cw = rotNorm === 90 || rotNorm === 270 ? h : w;
-          const ch = rotNorm === 90 || rotNorm === 270 ? w : h;
-          const c = document.createElement("canvas");
-          c.width = cw; c.height = ch;
-          const ctx = c.getContext("2d");
-          ctx.imageSmoothingEnabled = false;
-          ctx.translate(cw / 2, ch / 2);
-          ctx.rotate((rotNorm * Math.PI) / 180);
-          ctx.drawImage(el, -w / 2, -h / 2, w, h);
-          return c;
-        };
+    return () => { alive = false; };
+  }, [location]);
 
-        const rotations = [0, 90, 180, 270];
-        const toggles = [
-          { invert: false, threshold: false },
-          { invert: false, threshold: true },
-          { invert: true, threshold: false },
-          { invert: true, threshold: true },
-        ];
-        for (const r of rotations) {
-          const canvas = makeCanvas(img, r, 2);
-          for (const t of toggles) {
-            const val = scanWithJsQR(canvas, t.invert, t.threshold);
-            if (val) {
-              handleQrFound(val);
-              cleanup();
-              return;
-            }
-          }
-        }
-      } catch {}
-
-      setScanErr("No QR code detected in the image.");
-    } catch (e) {
-      setScanErr(e?.message || "Failed to decode QR image.");
-    } finally {
-      cleanup();
-    }
-  }
-
-  function handleQrFound(text) {
-    stopCamera();
-    setScanModalOpen(false);
-    const coords = parseLatLngFromToken(text);
-    setScanResult({ token: text, coords });
-    setTimeout(() => initMap(coords), 0);
-  }
-
-  // Initialize map and draw/update route
-  async function initMap(coords) {
-    if (!coords) return;
-
-    if (!leafletRef.current.L) {
-      const L = (await import("leaflet")).default;
-      leafletRef.current.L = L;
-    }
-    const L = leafletRef.current.L;
-    if (!mapRef.current) return;
-
-    if (!leafletRef.current.map) {
-      leafletRef.current.map = L.map(mapRef.current).setView([coords.lat, coords.lng], 18);
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        maxZoom: 20,
-        attribution: "&copy; OpenStreetMap",
-      }).addTo(leafletRef.current.map);
-    }
-
-    if (leafletRef.current.marker) {
-      leafletRef.current.marker.setLatLng([coords.lat, coords.lng]);
-    } else {
-      leafletRef.current.marker = L.marker([coords.lat, coords.lng]).addTo(leafletRef.current.map);
-    }
-
-    if (!leafletRef.current.routingLoaded) {
-      await import("leaflet-routing-machine");
-      leafletRef.current.routingLoaded = true;
-    }
-
-    const router = L.Routing.osrmv1({
-      serviceUrl: "https://router.project-osrm.org/route/v1",
-      profile: "foot",
-    });
-
-    const waypoints = [L.latLng(START.lat, START.lng), L.latLng(coords.lat, coords.lng)];
-
-    if (!leafletRef.current.routing) {
-      leafletRef.current.routing = L.Routing.control({
-        waypoints,
-        router,
-        routeWhileDragging: false,
-        addWaypoints: false,
-        draggableWaypoints: false,
-        fitSelectedRoutes: false,
-        show: false,
-        lineOptions: { styles: [{ color: "#059669", weight: 6, opacity: 0.9 }] },
-        createMarker: () => null,
-      })
-        .addTo(leafletRef.current.map)
-        .on("routesfound", (e) => {
-          const route = e.routes?.[0];
-          if (route?.coordinates?.length) {
-            const bounds = L.latLngBounds(route.coordinates);
-            leafletRef.current.map.fitBounds(bounds, { padding: [24, 24] });
-          }
-        });
-    } else {
-      leafletRef.current.routing.setWaypoints(waypoints);
-    }
-  }
+  // cleanup when unmount
+  useEffect(() => {
+    return () => {
+      try { refs.current.map?.remove(); } catch {}
+      refs.current.map = null;
+    };
+  }, []);
 
   return (
-    <div className="min-h-screen bg-slate-50 font-poppins">
-      {/* Page header */}
-      <section className="pt-24 pb-8">
-        <div className="mx-auto w-full max-w-7xl px-6 lg:px-8">
-          <div className="mb-2 text-sm text-slate-500">
-            <NavLink to="/" className="hover:text-slate-700">Home</NavLink>
-            &nbsp;›&nbsp;<span className="text-slate-700">Search For Deceased</span>
-          </div>
-
-          <Card className="border-slate-200">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-2xl sm:text-3xl">Search For Deceased</CardTitle>
-              <CardDescription>Find loved ones by plot ID or name. Live data from the system.</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-                <div className="flex items-center gap-3">
-                  <Avatar className="h-9 w-9">
-                    <AvatarFallback className="bg-emerald-100 text-emerald-700 font-semibold">GP</AvatarFallback>
-                  </Avatar>
-                  <div className="text-sm text-slate-600">
-                    Garden of Peace Cemetery
-                  </div>
-                </div>
-                <div className="w-full sm:w-80">
-                  {/* no Label import; using native label if needed */}
-                  <div className="relative">
-                    <Input
-                      id="q"
-                      value={q}
-                      onChange={(e) => { setQ(e.target.value); setPage(1); }}
-                      placeholder="Search plot, name, birth or death date…"
-                      className="pr-10"
-                    />
-                    <svg
-                      className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                    >
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M21 21l-4.35-4.35m.6-5.4a6 6 0 11-12 0 6 6 0 0112 0z" />
-                    </svg>
-                  </div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-      </section>
-
-      {/* Results */}
-      <section className="pb-10">
-        <div className="mx-auto w-full max-w-7xl px-6 lg:px-8">
-          <Card className="overflow-hidden border-slate-200">
-            <CardContent className="p-0">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Plot ID</TableHead>
-                    <TableHead>Name</TableHead>
-                    <TableHead>Birth Date</TableHead>
-                    <TableHead>Death Date</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {loading && (
-                    <TableRow>
-                      <TableCell colSpan={4} className="text-center text-slate-500 py-10">
-                        Loading…
-                      </TableCell>
-                    </TableRow>
-                  )}
-                  {error && (
-                    <TableRow>
-                      <TableCell colSpan={4} className="text-center text-rose-600 py-10">
-                        {error}
-                      </TableCell>
-                    </TableRow>
-                  )}
-                  {!loading && !error && pageRows.length === 0 && (
-                    <TableRow>
-                      <TableCell colSpan={4} className="text-center text-slate-500 py-10">
-                        No records found.
-                      </TableCell>
-                    </TableRow>
-                  )}
-                  {pageRows.map((row) => (
-                    <TableRow key={row.id} className="hover:bg-emerald-50/40">
-                      <TableCell className="text-slate-800">{row.plot_id}</TableCell>
-                      <TableCell className="font-medium text-slate-900">{row.deceased_name || "—"}</TableCell>
-                      <TableCell className="text-slate-700">{formatDate(row.birth_date)}</TableCell>
-                      <TableCell className="text-slate-700">{formatDate(row.death_date)}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-
-              <Separator />
-
-              {/* Pagination */}
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-5 py-4 text-sm">
-                <div className="text-slate-600">
-                  Showing <strong>{from}</strong>–<strong>{to}</strong> of <strong>{total}</strong> result{total !== 1 ? "s" : ""}.
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setPage((p) => Math.max(1, p - 1))}
-                    disabled={page === 1}
-                    aria-label="Previous"
-                  >
-                    ◀
-                  </Button>
-                  <span className="text-slate-600">
-                    Page <strong>{page}</strong> of <strong>{totalPages}</strong>
-                  </span>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                    disabled={page === totalPages}
-                    aria-label="Next"
-                  >
-                    ▶
-                  </Button>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <div className="text-center text-slate-400 font-medium my-6">OR</div>
-
-          <div className="flex justify-center">
-            <Button onClick={() => { setScanModalOpen(true); setScanMode("choose"); setScanErr(""); }} size="lg">
-              Scan a QR Code
-            </Button>
+    <div className="min-h-screen bg-slate-50">
+      <div className="mx-auto max-w-6xl px-4 py-3">
+        <div className="mb-2 text-sm text-slate-700">
+          <b>User:</b>{" "}
+          {location ? `${location.lat.toFixed(6)}, ${location.lng.toFixed(6)}` : "—"}{" "}
+          · <b>Dest:</b> {DEST.lat.toFixed(6)}, {DEST.lng.toFixed(6)} · {status}{" "}
+          {distance > 0 && <> · <b>{fmt(distance)}</b></>}
+          <div className="text-xs text-slate-500">
+            Legs cached under <code>{CACHE_NS}</code>. Mock point {idx + 1}/{MOCK_POINTS.length}, changes every {Math.round(MOCK_INTERVAL_MS / 1000)}s.
           </div>
         </div>
-      </section>
-
-      {/* map + res + rescan */}
-      {scanResult && (
-        <section className="pb-6">
-          <div className="mx-auto w-full max-w-7xl px-6 lg:px-8 space-y-4">
-            <Card>
-              <CardContent className="p-4">
-                <div className="text-sm text-slate-600 break-all">
-                  <span className="font-semibold">QR:</span> {scanResult.token}
-                </div>
-              </CardContent>
-            </Card>
-
-            {scanResult.coords ? (
-              <>
-                <Card className="overflow-hidden">
-                  <div ref={mapRef} className="w-full h-[420px]" />
-                </Card>
-                <div className="text-center">
-                  <Button onClick={() => { setScanResult(null); setScanModalOpen(true); setScanMode("choose"); }}>
-                    Scan another QR Code
-                  </Button>
-                </div>
-              </>
-            ) : (
-              <Card>
-                <CardContent className="p-6 text-center">
-                  <p className="text-slate-600 mb-3">This QR does not include coordinates.</p>
-                  <Button onClick={() => { setScanResult(null); setScanModalOpen(true); setScanMode("choose"); }}>
-                    Scan another QR Code
-                  </Button>
-                </CardContent>
-              </Card>
-            )}
-          </div>
-        </section>
-      )}
-
-      {/* Scan Modal (shadcn Dialog) */}
-      <Dialog open={scanModalOpen} onOpenChange={(o) => (o ? setScanModalOpen(true) : closeScanModal())}>
-        <DialogContent className="sm:max-w-2xl" onInteractOutside={(e) => e.preventDefault()}>
-          <DialogHeader>
-            <DialogTitle>Scan a QR Code</DialogTitle>
-            <DialogDescription>Use your camera or upload a QR image to locate a grave on the map.</DialogDescription>
-          </DialogHeader>
-
-          {scanMode === "choose" && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <Button onClick={startCamera}>Open Camera</Button>
-
-              <div className="flex items-center justify-center">
-                {/* native label styled like shadcn button */}
-                <label
-                  htmlFor="qr-upload"
-                  className="w-full cursor-pointer rounded-md border border-input bg-background px-4 py-2.5 text-center text-sm font-medium hover:bg-accent hover:text-accent-foreground"
-                >
-                  Upload QR Image
-                </label>
-                <input
-                  id="qr-upload"
-                  ref={fileRef}
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onClick={(e) => { e.currentTarget.value = ""; }}
-                  onChange={(e) => handleUploadFile(e.target.files?.[0] || null)}
-                />
-              </div>
-            </div>
-          )}
-
-          {scanMode === "camera" && (
-            <div className="space-y-3">
-              <div className="rounded-lg overflow-hidden border">
-                <div className="w-full aspect-video bg-muted/40">
-                  <video ref={videoRef} className="w-full h-full object-cover" muted playsInline />
-                </div>
-              </div>
-
-              {scanErr && (
-                <div className="rounded-md border border-rose-200 bg-rose-50 text-rose-700 px-3 py-2 text-sm">
-                  {scanErr}
-                </div>
-              )}
-
-              <DialogFooter className="gap-2 sm:gap-0">
-                <Button variant="outline" onClick={() => { stopCamera(); setScanMode("choose"); }}>
-                  Back
-                </Button>
-                <Button onClick={closeScanModal}>Close</Button>
-              </DialogFooter>
-            </div>
-          )}
-
-          {scanMode === "upload" && (
-            <div className="text-sm text-slate-600">
-              Processing image… {scanErr && <span className="text-rose-600 font-medium ml-2">{scanErr}</span>}
-            </div>
-          )}
-
-          {scanErr && scanMode !== "upload" && scanMode !== "camera" && (
-            <div className="rounded-md border border-rose-200 bg-rose-50 text-rose-700 px-3 py-2 text-sm">
-              {scanErr}
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
+        <div ref={mapRef} className="h-[520px] w-full rounded-md border bg-white" />
+      </div>
     </div>
   );
 }

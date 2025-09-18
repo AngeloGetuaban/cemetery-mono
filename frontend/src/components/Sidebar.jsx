@@ -201,21 +201,18 @@ export default function Sidebar({ base = "" }) {
 
         {/* Footer logout */}
         <div className="m-4">
-          <Card className="rounded-2xl border-slate-200 shadow-[0_10px_24px_-12px_rgba(2,6,23,0.14)]">
-            <Button
-              variant="ghost"
-              className="w-full justify-start gap-3 rounded-2xl px-3 py-3 text-[14px] font-medium text-slate-700 hover:bg-slate-100"
-              onClick={logout}
-            >
-              <span className="grid place-items-center h-9 w-9 rounded-[12px] border border-slate-200 text-slate-600">
-                <LogOut size={18} />
-              </span>
-              {!collapsed && <span>Logout</span>}
-            </Button>
-          </Card>
+          <Button
+            variant="destructive" // solid red style
+            className="w-full justify-start gap-3 rounded-2xl px-3 py-6 text-[14px] font-medium"
+            onClick={logout}
+          >
+            <span className="grid place-items-center h-9 w-9 rounded-[12px] border border-red-200 bg-red-50 text-red-600">
+              <LogOut size={18} />
+            </span>
+            {!collapsed && <span>Logout</span>}
+          </Button>
         </div>
       </aside>
-
       {/* spacer so main content doesn't slide under fixed sidebar */}
       <div aria-hidden style={{ width: collapsed ? W_COLLAPSED : W_FULL }} />
     </>
