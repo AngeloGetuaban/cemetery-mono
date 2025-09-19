@@ -12,7 +12,6 @@ const pool = require('./config/database');
 
 const app = express();
 
-// ---- security
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
@@ -20,24 +19,41 @@ app.use(
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
-        // allow fetch/XHR/WebSocket to same origin + blob:s
-        connectSrc: ["'self'", "blob:"],
-        // typical allowances
-        imgSrc: ["'self'", "data:", "blob:"],
+
+        // Allow fetch/XHR/WebSocket
+        connectSrc: [
+          "'self'",
+          "blob:",
+          "https://router.project-osrm.org",
+        ],
+
+        // Google Fonts
+        styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+        styleSrcElem: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+        styleSrcAttr: ["'unsafe-inline'"],
+        fontSrc: ["'self'", "data:", "https://fonts.gstatic.com"],
+
+        // Images / tiles
+        imgSrc: [
+          "'self'",
+          "data:",
+          "blob:",
+          "https://tile.openstreetmap.org",
+          "https://*.tile.openstreetmap.org",
+          "https://*.basemaps.cartocdn.com",
+        ],
+
+        workerSrc: ["'self'", "blob:"],
+        childSrc: ["'self'", "blob:"],
         scriptSrc: ["'self'"],
-        styleSrc: ["'self'", "'unsafe-inline'"],
-        fontSrc: ["'self'", "data:"],
         objectSrc: ["'none'"],
         baseUri: ["'self'"],
         frameAncestors: ["'self'"],
-        // needed if you spawn Web Workers (map libs, etc.)
-        workerSrc: ["'self'", "blob:"],
-        // (optional) in some browsers childSrc controls workers too
-        childSrc: ["'self'", "blob:"],
       },
     },
   })
 );
+
 app.use(cors());
 
 // ---- body parsing
