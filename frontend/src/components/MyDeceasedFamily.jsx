@@ -58,7 +58,7 @@ export default function MyDeceasedFamily({ open, onOpenChange }) {
     const fetchData = async () => {
       setLoading(true);
       try {
-        const res = await fetch(`${API_BASE}/graves/family/${userId}`);
+        const res = await fetch(`${API_BASE}/graves/graves/family/${userId}`);
         if (!res.ok) throw new Error("Failed to fetch burial records");
         const data = await res.json();
         setFamily(Array.isArray(data) ? data : [data]);
