@@ -15,8 +15,27 @@ const app = express();
 // ---- security
 app.use(
   helmet({
-    crossOriginResourcePolicy: { policy: 'cross-origin' },
+    crossOriginResourcePolicy: { policy: "cross-origin" },
     crossOriginEmbedderPolicy: false,
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        // allow fetch/XHR/WebSocket to same origin + blob:s
+        connectSrc: ["'self'", "blob:"],
+        // typical allowances
+        imgSrc: ["'self'", "data:", "blob:"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        fontSrc: ["'self'", "data:"],
+        objectSrc: ["'none'"],
+        baseUri: ["'self'"],
+        frameAncestors: ["'self'"],
+        // needed if you spawn Web Workers (map libs, etc.)
+        workerSrc: ["'self'", "blob:"],
+        // (optional) in some browsers childSrc controls workers too
+        childSrc: ["'self'", "blob:"],
+      },
+    },
   })
 );
 app.use(cors());
