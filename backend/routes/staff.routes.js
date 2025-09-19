@@ -1,8 +1,41 @@
+// backend/routes/staff.routes.js
 const router = require('express').Router();
-const { verifyToken, requireRole } = require('../middleware/auth');
-const { myTasks } = require('../controllers/staff.controller');
+const { verifyToken } = require('../middleware/auth');
 
-router.use(verifyToken, requireRole('staff','admin'));
-router.get('/my-tasks', myTasks);
+const {
+  getAllTickets,
+  changeTicketStatus,
+  getBurialSchedules,
+  getAvailablePlots,
+  createBurialSchedule,
+  updateBurialSchedule,
+  deleteBurialSchedule,
+  getVisitors,
+  getMaintenanceSchedules,
+  createMaintenance,
+  updateMaintenance,
+  deleteMaintenance,
+} = require('../controllers/staff.controller');
+
+// tickets
+router.get('/get-all-tickets/', verifyToken, getAllTickets);
+router.patch('/change-status/:id', verifyToken, changeTicketStatus);
+
+// burial schedules
+router.get('/burial-schedules/', verifyToken, getBurialSchedules);
+router.post('/burial-schedules', verifyToken, createBurialSchedule);
+router.put('/burial-schedules/:id', verifyToken, updateBurialSchedule);
+router.delete('/burial-schedules/:id', verifyToken, deleteBurialSchedule);
+
+// plots (not used in graves)
+router.get('/plots/available', verifyToken, getAvailablePlots);
+
+// visitors list for dropdown
+router.get('/visitors', verifyToken, getVisitors);
+
+router.get('/maintenance-schedules/', verifyToken, getMaintenanceSchedules);
+router.post('/add-maintenance', verifyToken, createMaintenance);
+router.put('/edit-maintenance/:id', verifyToken, updateMaintenance)
+router.delete('/delete-maintenance/:id', verifyToken, deleteMaintenance);
 
 module.exports = router;

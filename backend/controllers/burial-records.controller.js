@@ -1,9 +1,9 @@
 // backend/controllers/plot.controller.js
 const pool = require('../config/database');
 
-
 async function getBurialRecords(req, res, next) {
   try {
+    const familyId = req.params?.id || req.query?.family_contact || null;
     const limit = req.query?.limit ? Number(req.query.limit) : null;
     const offset = req.query?.offset ? Number(req.query.offset) : null;
 
@@ -12,9 +12,15 @@ async function getBurialRecords(req, res, next) {
              u.first_name || ' ' || u.last_name AS family_contact_name
       FROM graves g
       LEFT JOIN users u ON g.family_contact = u.id
-      ORDER BY g.id DESC
     `;
+
     const params = [];
+    if (familyId) {
+      params.push(familyId);
+      sql += ` WHERE g.family_contact = $${params.length}`;
+    }
+
+    sql += ` ORDER BY g.id DESC`;
 
     if (Number.isFinite(limit) && limit > 0) {
       params.push(limit);
@@ -31,6 +37,7 @@ async function getBurialRecords(req, res, next) {
     next(err);
   }
 }
+
 module.exports = {
-    getBurialRecords
+  getBurialRecords,
 };

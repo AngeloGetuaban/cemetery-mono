@@ -24,7 +24,6 @@ export default function Home() {
     years: 0,
   });
 
-  // ✅ dynamic cemetery info for the HERO section
   const [siteName, setSiteName] = useState("Garden of Peace");
   const [siteSlogan, setSiteSlogan] = useState("Where memories bloom eternal");
   const [siteDesc, setSiteDesc] = useState(

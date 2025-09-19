@@ -12,7 +12,7 @@ function routeForRole(role) {
   }
   
   export async function postSignup({ username, email, password, first_name, last_name, phone, address }) {
-    const BASE = (import.meta?.env?.VITE_API_BASE_URL || '').replace(/\/+$/, '');
+    const BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
     const url = `${BASE}/auth/register`;
   
     const res = await fetch(url, {

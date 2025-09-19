@@ -1,371 +1,1128 @@
 // frontend/src/views/visitor/pages/SearchForDeceased.jsx
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
+import { NavLink } from "react-router-dom";
+import fetchBurialRecords from "../js/get-burial-records";
+import {
+  fetchRoadPlots,
+  buildGraph,
+  buildRoutedPolyline,
+  fmtDistance,
+} from "../js/dijkstra-pathfinding";
+
 import "leaflet/dist/leaflet.css";
-import { fetchRoadPlots, buildGraph, dijkstra } from "../js/dijkstra-pathfinding";
 
-// --- Destination (grave location) ---
-const DEST = { lat: 15.4950946637584, lng: 120.5548330086766 };
+// shadcn/ui
+import { Button } from "../../../components/ui/button";
+import { Input } from "../../../components/ui/input";
+import {
+  Card, CardContent, CardHeader, CardTitle, CardDescription,
+} from "../../../components/ui/card";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
+} from "../../../components/ui/dialog";
 
-// --- 3-point mock "live" location series (cycles every 3s) ---
-const MOCK_POINTS = [
-  { lat: 15.4943159, lng: 120.5548342 },
-  { lat: 15.4944027, lng: 120.5549954 },
-  { lat: 15.4945023, lng: 120.5549123 },
-];
-const MOCK_INTERVAL_MS = 3000;
-
-// ---------- helpers ----------
-function haversineMeters(a, b) {
-  const R = 6371000;
-  const toRad = (x) => (x * Math.PI) / 180;
-  const dLat = toRad(b.lat - a.lat);
-  const dLng = toRad(b.lng - a.lng);
-  const lat1 = toRad(a.lat);
-  const lat2 = toRad(b.lat);
-  const h =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
-}
-const fmt = (m) => (m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${Math.round(m)} m`);
-
-// project P onto infinite line AB; returns {t in R, point:{lat,lng}}
-function projectPoint(A, B, P) {
-  const ax = A.lng, ay = A.lat;
-  const bx = B.lng, by = B.lat;
-  const px = P.lng, py = P.lat;
-  const vx = bx - ax, vy = by - ay;
-  const wx = px - ax, wy = py - ay;
-  const denom = vx * vx + vy * vy || 1e-12;
-  const t = (wx * vx + wy * vy) / denom;
-  return { t, point: { lat: ay + t * vy, lng: ax + t * vx } };
+// --------------------------- utils: formatting ---------------------------
+function formatDate(s) {
+  if (!s) return "—";
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return s;
+  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "2-digit" });
 }
 
-// ---------- tail cut ----------
-function cutPolylineAtProjection(poly, dest, lookbackSegments = 8, maxPerpMeters = 12) {
-  if (!poly || poly.length < 2) return poly;
+// --------------------------- utils: QR parsing ---------------------------
+// Extract lat/lng from MANY token styles: JSON, nested JSON string, URL, geo:, WKT,
+// "lat,lng", "lng,lat", Google Maps @lat,lng,zoom or q=lat,lng, KV pairs, etc.
+function parseLatLngFromToken(token) {
+  if (!token) return null;
+  const raw = String(token).trim();
 
-  const startIdx = Math.max(0, poly.length - 1 - lookbackSegments);
-  let best = null;
-  for (let i = poly.length - 2; i >= startIdx; i--) {
-    const A = { lat: poly[i][0], lng: poly[i][1] };
-    const B = { lat: poly[i + 1][0], lng: poly[i + 1][1] };
-    const { t, point } = projectPoint(A, B, dest);
-    if (t >= 0 && t <= 1) {
-      const perp = haversineMeters(point, dest);
-      if (perp <= maxPerpMeters && (!best || perp < best.perp)) {
-        best = { idx: i, point, perp };
+  // helper: try parse JSON or nested JSON
+  const tryJson = (text) => {
+    try {
+      const obj = JSON.parse(text);
+      if (obj && typeof obj === "object") {
+        // direct lat/lng
+        if (Number.isFinite(+obj.lat) && Number.isFinite(+obj.lng)) {
+          return { lat: +obj.lat, lng: +obj.lng, data: obj };
+        }
+        // search object graph for lat/lng pairs
+        const stack = [obj];
+        while (stack.length) {
+          const cur = stack.pop();
+          if (cur && typeof cur === "object") {
+            if (Number.isFinite(+cur.lat) && Number.isFinite(+cur.lng)) {
+              return { lat: +cur.lat, lng: +cur.lng, data: obj };
+            }
+            for (const v of Object.values(cur)) {
+              if (!v) continue;
+              // nested JSON string
+              if (typeof v === "string" && v.trim().startsWith("{") && v.trim().endsWith("}")) {
+                try {
+                  const nested = JSON.parse(v);
+                  stack.push(nested);
+                } catch {}
+              } else if (typeof v === "object") {
+                stack.push(v);
+              }
+            }
+          }
+        }
+        return { lat: null, lng: null, data: obj };
       }
-    }
-  }
-
-  if (!best) {
-    const i = poly.length - 2;
-    const A = { lat: poly[i][0], lng: poly[i][1] };
-    const B = { lat: poly[i + 1][0], lng: poly[i + 1][1] };
-    const dA = haversineMeters(A, dest);
-    const dB = haversineMeters(B, dest);
-    if (dB > dA) {
-      const { t, point } = projectPoint(A, B, dest);
-      const tc = Math.min(1, Math.max(0, t));
-      const P = { lat: A.lat + (B.lat - A.lat) * tc, lng: A.lng + (B.lng - A.lng) * tc };
-      const next = poly.slice(0, poly.length - 1);
-      next[next.length - 1] = [P.lat, P.lng];
-      return next;
-    }
-    return poly;
-  }
-
-  const trimmed = poly.slice(0, best.idx + 1);
-  trimmed.push([best.point.lat, best.point.lng]);
-  return trimmed;
-}
-
-// ---------- OSRM per-leg with cache ----------
-const CACHE_NS = "osrm_leg_cache_v1";
-const CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 7;
-const memCache = new Map();
-
-function key5([lat, lng]) { return `${lat.toFixed(5)},${lng.toFixed(5)}`; }
-function loadLocal(key) {
-  try {
-    const raw = localStorage.getItem(CACHE_NS);
-    if (!raw) return null;
-    const store = JSON.parse(raw);
-    const rec = store[key];
-    if (!rec) return null;
-    if (Date.now() > rec.exp) return null;
-    return rec.data;
-  } catch { return null; }
-}
-function saveLocal(key, data) {
-  try {
-    const raw = localStorage.getItem(CACHE_NS);
-    const store = raw ? JSON.parse(raw) : {};
-    store[key] = { data, exp: Date.now() + CACHE_TTL_MS };
-    const keys = Object.keys(store);
-    if (keys.length > 300) keys.slice(0, keys.length - 300).forEach((k) => delete store[k]);
-    localStorage.setItem(CACHE_NS, JSON.stringify(store));
-  } catch (err) { console.error("localStorage write failed", err); }
-}
-async function getLegCached(a, b) {
-  const k = `${key5(a)}|${key5(b)}`;
-  if (memCache.has(k)) return memCache.get(k);
-  const local = loadLocal(k);
-  if (local) { memCache.set(k, local); return local; }
-  const url =
-    `https://router.project-osrm.org/route/v1/foot/${a[1]},${a[0]};${b[1]},${b[0]}` +
-    `?overview=full&geometries=geojson&steps=false&continue_straight=true`;
-  let result = null;
-  try {
-    const res = await fetch(url);
-    if (res.ok) {
-      const json = await res.json();
-      const coords = json?.routes?.[0]?.geometry?.coordinates;
-      if (Array.isArray(coords) && coords.length) result = coords.map(([lng, lat]) => [lat, lng]);
-    }
-  } catch {}
-  if (!result) result = [a, b];
-  memCache.set(k, result);
-  saveLocal(k, result);
-  return result;
-}
-
-// ---------- NEW robust head builder ----------
-/**
- * Build route from user to nodes:
- * 1) Build node→node OSRM polyline (legsNodes).
- * 2) Compute cumulative distance along legsNodes; use this to restrict to the
- *    first `lookaheadMeters` as the “early window”.
- * 3) Try to project USER onto any segment inside that early window (≤ projTolM).
- *    If found, splice USER→projection→(rest).
- * 4) Otherwise, OSRM USER→each node whose mapped along-route distance ≤ lookaheadMeters,
- *    pick the shortest leg, then join at the nearest vertex index on legsNodes.
- */
-async function buildRouteFromUser(user, nodes, { lookaheadMeters = 140, projTolM = 22 } = {}) {
-  // 1) node→node OSRM expanded polyline
-  const legsNodes = [];
-  for (let i = 0; i < nodes.length - 1; i++) {
-    // eslint-disable-next-line no-await-in-loop
-    const seg = await getLegCached(nodes[i], nodes[i + 1]);
-    if (i === 0) legsNodes.push(...seg);
-    else legsNodes.push(...seg.slice(1));
-  }
-
-  // 2) cumulative along-route distance over legsNodes
-  const cum = [0];
-  for (let i = 1; i < legsNodes.length; i++) {
-    cum[i] = cum[i - 1] + haversineMeters(
-      { lat: legsNodes[i - 1][0], lng: legsNodes[i - 1][1] },
-      { lat: legsNodes[i][0], lng: legsNodes[i][1] }
-    );
-  }
-
-  // helper: find nearest vertex index on legsNodes to a point
-  const nearestVertexIdx = (pt) => {
-    let bestI = 0, bestD = Infinity;
-    for (let i = 0; i < legsNodes.length; i++) {
-      const d = haversineMeters({ lat: legsNodes[i][0], lng: legsNodes[i][1] }, pt);
-      if (d < bestD) { bestD = d; bestI = i; }
-      if (cum[i] > lookaheadMeters) break; // only need early window for attach
-    }
-    return bestI;
+    } catch {}
+    return null;
   };
+  const jsonAttempt = tryJson(raw);
+  if (jsonAttempt) return jsonAttempt;
 
-  // 3) try projection onto early window of legsNodes
-  for (let i = 0; i < legsNodes.length - 1; i++) {
-    if (cum[i] > lookaheadMeters) break;
-    const A = { lat: legsNodes[i][0], lng: legsNodes[i][1] };
-    const B = { lat: legsNodes[i + 1][0], lng: legsNodes[i + 1][1] };
-    const { t, point } = projectPoint(A, B, user);
-    if (t >= 0 && t <= 1) {
-      const perp = haversineMeters(point, user);
-      if (perp <= projTolM) {
-        const head = [[user.lat, user.lng], [point.lat, point.lng]];
-        const tail = legsNodes.slice(i + 1);
-        if (tail.length) tail[0] = [point.lat, point.lng];
-        return [...head, ...tail];
-      }
-    }
+  // geo: URI
+  const mGeo = raw.match(/^geo:([+-]?\d+(?:\.\d+)?),([+-]?\d+(?:\.\d+)?)/i);
+  if (mGeo) return { lat: +mGeo[1], lng: +mGeo[2], data: null };
+
+  // Google Maps links:
+  const mQ = raw.match(/[?&](?:q|query)=([+-]?\d+(?:\.\d+)?),\s*([+-]?\d+(?:\.\d+)?)/i);
+  if (mQ) return { lat: +mQ[1], lng: +mQ[2], data: null };
+
+  // https://www.google.com/maps/@lat,lng,18z
+  const mAt = raw.match(/\/@\s*([+-]?\d+(?:\.\d+)?),\s*([+-]?\d+(?:\.\d+)?),/i);
+  if (mAt) return { lat: +mAt[1], lng: +mAt[2], data: null };
+
+  // URL params ?lat=...&lng=...
+  const mUrlLat = raw.match(/[?&]lat=([+-]?\d+(?:\.\d+)?)/i);
+  const mUrlLng = raw.match(/[?&]lng=([+-]?\d+(?:\.\d+)?)/i);
+  if (mUrlLat && mUrlLng) return { lat: +mUrlLat[1], lng: +mUrlLng[1], data: null };
+
+  // KEY:VAL pairs
+  const mKVLat = raw.match(/(?:^|[|,;\s])lat\s*:\s*([+-]?\d+(?:\.\d+)?)(?=$|[|,;\s])/i);
+  const mKVLng = raw.match(/(?:^|[|,;\s])lng\s*:\s*([+-]?\d+(?:\.\d+)?)(?=$|[|,;\s])/i);
+  if (mKVLat && mKVLng) return { lat: +mKVLat[1], lng: +mKVLng[1], data: null };
+
+  // WKT POINT (lng lat)
+  const mPoint = raw.match(/POINT\s*\(\s*([+-]?\d+(?:\.\d+)?)\s+([+-]?\d+(?:\.\d+)?)\s*\)/i);
+  if (mPoint) return { lat: +mPoint[2], lng: +mPoint[1], data: null };
+
+  // Plain pair: "lat,lng" or "lng,lat" (decide by range)
+  const mPair = raw.match(/([+-]?\d+(?:\.\d+)?)\s*[,\s]\s*([+-]?\d+(?:\.\d+)?)/);
+  if (mPair) {
+    const a = +mPair[1], b = +mPair[2];
+    const looksLikeLatLng = Math.abs(a) <= 90 && Math.abs(b) <= 180;
+    const looksLikeLngLat = Math.abs(a) <= 180 && Math.abs(b) <= 90 && !looksLikeLatLng;
+    if (looksLikeLatLng) return { lat: a, lng: b, data: null };
+    if (looksLikeLngLat) return { lat: b, lng: a, data: null };
+    return { lat: a, lng: b, data: null };
   }
 
-  // 4) fallback: OSRM to candidate nodes whose along-route position is early
-  // map each node to its nearest vertex index to know its along-route distance
-  const nodeToAlongDist = (node) => {
-    const j = nearestVertexIdx({ lat: node[0], lng: node[1] });
-    return { j, dist: cum[j] };
-  };
-  const candidates = [];
-  for (let i = 0; i < nodes.length; i++) {
-    const { j, dist } = nodeToAlongDist(nodes[i]);
-    if (dist <= lookaheadMeters) candidates.push({ nodeIdx: i, vertexIdx: j });
-    else break;
-    if (candidates.length >= 6) break; // cap attempts
-  }
-  if (candidates.length === 0) candidates.push({ nodeIdx: 0, vertexIdx: 0 });
-
-  let best = null; // {nodeIdx, vertexIdx, leg, length}
-  for (const c of candidates) {
-    // eslint-disable-next-line no-await-in-loop
-    const leg = await getLegCached([user.lat, user.lng], nodes[c.nodeIdx]);
-    let len = 0;
-    for (let k = 0; k < leg.length - 1; k++) {
-      len += haversineMeters(
-        { lat: leg[k][0], lng: leg[k][1] },
-        { lat: leg[k + 1][0], lng: leg[k + 1][1] }
-      );
-    }
-    if (!best || len < best.length) best = { ...c, leg, length: len };
-  }
-
-  // join at the *vertexIdx* (nearest vertex inside early window), not by exact coord
-  const stitched = [...best.leg, ...legsNodes.slice(best.vertexIdx + 1)];
-  return stitched;
+  return { lat: null, lng: null, data: null };
 }
 
+const QR_LABELS = {
+  deceased_name: "Deceased Name",
+  birth_date: "Birth Date",
+  death_date: "Death Date",
+  burial_date: "Burial Date",
+};
+const capitalizeLabelFromKey = (k) => k.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+const formatQrValue = (key, value) => {
+  if (value == null || value === "") return "—";
+  if (key === "lat" || key === "lng") return Number.isFinite(+value) ? (+value).toFixed(6) : String(value);
+  if (/(_date$|^created_at$|^updated_at$)/.test(key)) return formatDate(value);
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  return String(value);
+};
+function qrDisplayEntries(data) {
+  const omit = new Set([
+    "_type","id","uid","plot_id","family_contact","is_active","lat","lng",
+    "created_at","updated_at","headstone_type","memorial_text"
+  ]);
+  return Object.entries(data)
+    .filter(([k]) => !omit.has(k))
+    .map(([k, v]) => ({ key: k, label: QR_LABELS[k] ?? capitalizeLabelFromKey(k), value: formatQrValue(k, v) }));
+}
+
+// --------------------------- utils: name matching ---------------------------
+const normalizeName = (s) =>
+  String(s || "").toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z\s]/g, "").replace(/\s+/g, " ").trim();
+
+function levenshtein(a, b) {
+  a = a || ""; b = b || "";
+  const m = a.length, n = b.length;
+  if (!m) return n; if (!n) return m;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = Math.min(dp[i-1][j]+1, dp[i][j-1]+1, dp[i-1][j-1] + (a[i-1] === b[j-1] ? 0 : 1));
+  return dp[m][n];
+}
+
+const similarity = (a, b) => {
+  const A = normalizeName(a), B = normalizeName(b);
+  if (!A && !B) return 1;
+  const dist = levenshtein(A, B);
+  return 1 - dist / Math.max(A.length, B.length);
+};
+
+// Score based on first+last similarity (0..1)
+function nameScore(userFirst, userLast, fullName) {
+  const [recFirst, ...rest] = normalizeName(fullName).split(" ");
+  const recLast = rest.length ? rest[rest.length - 1] : "";
+  const sf = similarity(userFirst, recFirst);
+  const sl = similarity(userLast, recLast);
+  // If only first or only last provided, rely on that one more
+  if (userFirst && !userLast) return sf;
+  if (!userFirst && userLast) return sl;
+  return (sf + sl) / 2;
+}
+
+function sameDate(a, b) {
+  if (!a || !b) return false;
+  const da = new Date(a), db = new Date(b);
+  if (Number.isNaN(da.getTime()) || Number.isNaN(db.getTime()))
+    return String(a).slice(0,10) === String(b).slice(0,10);
+  const pad = (n) => String(n).padStart(2,"0");
+  const fa = `${da.getFullYear()}-${pad(da.getMonth()+1)}-${pad(da.getDate())}`;
+  const fb = `${db.getFullYear()}-${pad(db.getMonth()+1)}-${pad(db.getDate())}`;
+  return fa === fb;
+}
+
+// Keep all Leaflet panes beneath app chrome (Topbar/Sidebar).
+function ensureMapBehindUI(map, z = 0) {
+  const container = map.getContainer();
+  container.style.zIndex = String(z);      // container itself
+  container.style.position = container.style.position || "relative";
+
+  const panes = map.getPanes?.();
+  if (!panes) return;
+
+  // Lower every Leaflet pane
+  panes.mapPane.style.zIndex     = String(z);
+  panes.tilePane.style.zIndex    = String(z);
+  panes.overlayPane.style.zIndex = String(z);
+  panes.markerPane.style.zIndex  = String(z);
+  panes.shadowPane.style.zIndex  = String(z);
+  panes.tooltipPane.style.zIndex = String(z);
+  panes.popupPane.style.zIndex   = String(z);
+}
+
+
+// =======================================================================
+// Component
+// =======================================================================
 export default function SearchForDeceased() {
-  const mapRef = useRef(null);
-  const refs = useRef({ L: null, map: null, startM: null, destM: null, line: null });
-  const [status, setStatus] = useState("Loading…");
-  const [distance, setDistance] = useState(0);
-  const [location, setLocation] = useState(MOCK_POINTS[0]);
-  const [idx, setIdx] = useState(0);
+  // Data and search state
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [birthDate, setBirthDate] = useState("");
+  const [deathDate, setDeathDate] = useState("");
+  const [notFoundMsg, setNotFoundMsg] = useState("");
 
-  // cycle through the 3 mock points every 3s
+  // results
+  const [results, setResults] = useState([]);       // strong fuzzy matches
+  const [suggestions, setSuggestions] = useState([]); // weaker fuzzy matches
+
+  // Selection and scan
+  const [selected, setSelected] = useState(null);
+  const [scanDataForSelected, setScanDataForSelected] = useState(null);
+  const [scanResult, setScanResult] = useState(null); // { token, coords, data }
+
+  // Location and routing state
+  const [locationConsent, setLocationConsent] = useState(false);
+  const [locationModalOpen, setLocationModalOpen] = useState(false);
+  const [userLocation, setUserLocation] = useState(null);
+  const [graph, setGraph] = useState(null);
+  const [routeStatus, setRouteStatus] = useState("");
+  const [routeDistance, setRouteDistance] = useState(0);
+  const geoWatchIdRef = useRef(null);
+
+  // Map
+  const mapRef = useRef(null);
+  const [mapMounted, setMapMounted] = useState(false);
+  const leafletRef = useRef({
+    L: null,
+    map: null,
+    startMarker: null,
+    destMarker: null,
+    routeLine: null
+  });
+  const [mapCoords, setMapCoords] = useState(null);
+  const setMapNode = useCallback((n) => { mapRef.current = n; setMapMounted(!!n); }, []);
+
+  // Scan modal
+  const [scanModalOpen, setScanModalOpen] = useState(false);
+  const [scanMode, setScanMode] = useState("choose");
+  const [scanErr, setScanErr] = useState("");
+  const videoRef = useRef(null);
+  const rafRef = useRef(0);
+  const fileRef = useRef(null);
+  const canvasRef = useRef(null); // hidden canvas for jsQR
+
+  // Default fallback location (cemetery entrance)
+  const DEFAULT_START = { lat: 15.4942139, lng: 120.5547058 };
+
+  // -------------------------- Build graph on mount --------------------------
   useEffect(() => {
-    setLocation(MOCK_POINTS[0]);
-    setIdx(0);
-    const t = setInterval(() => {
-      setIdx((p) => {
-        const next = (p + 1) % MOCK_POINTS.length;
-        setLocation(MOCK_POINTS[next]);
-        return next;
-      });
-    }, MOCK_INTERVAL_MS);
-    return () => clearInterval(t);
+    let alive = true;
+    (async () => {
+      setRouteStatus("Loading cemetery data…");
+      try {
+        const features = await fetchRoadPlots();
+        if (!alive) return;
+        setRouteStatus("Building cemetery graph…");
+        const g = buildGraph(features, { k: 4, maxDist: 80 });
+        if (!alive) return;
+        setGraph(g);
+        setRouteStatus(`Graph ready (${Object.keys(g).length} nodes)`);
+      } catch (e) {
+        console.error('Graph building failed:', e);
+        setRouteStatus("Graph building failed");
+      }
+    })();
+    return () => { alive = false; };
   }, []);
 
-  async function ensureLeaflet() {
-    if (!refs.current.L) {
-      const mod = await import("leaflet");
-      refs.current.L = mod.default || mod;
-    }
-    return refs.current.L;
-  }
-
-  // recompute route on every location update
+  // -------------------------- Load burial records ---------------------------
   useEffect(() => {
-    if (!location) return;
-    let alive = true;
+    let ignore = false;
+    setLoading(true);
+    setError("");
+    fetchBurialRecords()
+      .then((data) => !ignore && setRows(Array.isArray(data) ? data : []))
+      .catch((e) => !ignore && setError(e.message || "Failed to load"))
+      .finally(() => !ignore && setLoading(false));
+    return () => { ignore = true; };
+  }, []);
 
-    (async () => {
-      const L = await ensureLeaflet();
-      if (!alive) return;
+  // -------------------------- Location permission ---------------------------
+  useEffect(() => {
+    if (mapCoords && !locationConsent) {
+      setLocationModalOpen(true);
+    }
+  }, [mapCoords, locationConsent]);
 
-      // init map once
-      if (!refs.current.map) {
-        const map = L.map(mapRef.current).setView([location.lat, location.lng], 17);
-        refs.current.map = map;
-        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-          maxZoom: 20,
-          attribution: "&copy; OpenStreetMap",
-        }).addTo(map);
-        refs.current.destM = L.marker([DEST.lat, DEST.lng]).addTo(map);
-      }
+  const requestUserLocation = useCallback(async () => {
+    setLocationConsent(true);
+    setLocationModalOpen(false);
 
-      // move/update start marker
-      if (refs.current.startM) refs.current.startM.setLatLng([location.lat, location.lng]);
-      else {
-        refs.current.startM = refs.current.L
-          .circleMarker([location.lat, location.lng], {
-            radius: 6,
-            color: "#0ea5e9",
-            weight: 2,
-            fillOpacity: 0.6,
-          })
-          .addTo(refs.current.map);
-      }
+    if (!("geolocation" in navigator)) {
+      console.warn("Geolocation not available, using default start location");
+      setUserLocation(DEFAULT_START);
+      return;
+    }
 
-      // 1) build graph
-      setStatus("Building cemetery graph…");
-      const features = await fetchRoadPlots();
-      const graph = buildGraph(features, { k: 7, maxDist: 110 });
-      const nodeKeys = Object.keys(graph);
-      if (!nodeKeys.length) return setStatus("No internal graph nodes.");
+    const onSuccess = (position) => {
+      const { latitude, longitude } = position.coords;
+      const location = { lat: latitude, lng: longitude };
+      setUserLocation(location);
+    };
+    const onError = (error) => {
+      console.warn("Geolocation error:", error);
+      setUserLocation(DEFAULT_START);
+    };
 
-      const nearestKey = (pt) => {
-        let best = null, bestD = Infinity;
-        for (const k of nodeKeys) {
-          const [lat, lng] = k.split(",").map(Number);
-          const d = haversineMeters(pt, { lat, lng });
-          if (d < bestD) { bestD = d; best = k; }
-        }
-        return best;
-      };
-
-      // 2) snap + dijkstra
-      const startKey = nearestKey(location);
-      const endKey = nearestKey(DEST);
-      setStatus("Running Dijkstra…");
-      const keys = dijkstra(graph, startKey, endKey);
-      if (!keys.length) return setStatus("No internal path found.");
-
-      const nodes = keys.map((k) => k.split(",").map(Number)).map(([lat, lng]) => [lat, lng]);
-
-      // 3) Build head robustly (early-window projection; else best early node)
-      setStatus("Stitching legs…");
-      let legs = await buildRouteFromUser({ lat: location.lat, lng: location.lng }, nodes, {
-        lookaheadMeters: 140,
-        projTolM: 22,
+    try {
+      navigator.geolocation.getCurrentPosition(onSuccess, onError, {
+        enableHighAccuracy: true, timeout: 10000, maximumAge: 60000
       });
 
-      // 4) Trim tail inline with destination
-      legs = cutPolylineAtProjection(legs, DEST, 8, 12);
-
-      // 5) distance + draw
-      let meters = 0;
-      for (let i = 0; i < legs.length - 1; i++) {
-        meters += haversineMeters(
-          { lat: legs[i][0], lng: legs[i][1] },
-          { lat: legs[i + 1][0], lng: legs[i + 1][1] }
-        );
+      if (geoWatchIdRef.current) {
+        navigator.geolocation.clearWatch(geoWatchIdRef.current);
       }
-      setDistance(meters);
-
-      if (refs.current.line) refs.current.map.removeLayer(refs.current.line);
-      refs.current.line = refs.current.L
-        .polyline(legs, { weight: 6, opacity: 0.95, color: "#059669" })
-        .addTo(refs.current.map);
-
-      refs.current.map.fitBounds(L.latLngBounds(legs), { padding: [24, 24] });
-      setStatus("Route ready (stable head & trimmed tail)");
-    })();
-
-    return () => { alive = false; };
-  }, [location]);
-
-  // cleanup when unmount
+      geoWatchIdRef.current = navigator.geolocation.watchPosition(onSuccess, onError, {
+        enableHighAccuracy: true, timeout: 20000, maximumAge: 60000
+      });
+    } catch (e) {
+      console.error("Geolocation setup failed:", e);
+      setUserLocation(DEFAULT_START);
+    }
+  }, []);
+  const useDefaultLocation = useCallback(() => {
+    setLocationConsent(true);
+    setLocationModalOpen(false);
+    setUserLocation(DEFAULT_START);
+  }, []);
   useEffect(() => {
     return () => {
-      try { refs.current.map?.remove(); } catch {}
-      refs.current.map = null;
+      if (geoWatchIdRef.current) navigator.geolocation.clearWatch(geoWatchIdRef.current);
     };
   }, []);
 
+  // ------------------------------- Map init --------------------------------
+  useEffect(() => {
+    let cancelled = false;
+    if (!mapMounted || !mapCoords || !userLocation || !graph) return;
+
+    (async () => {
+      if (!leafletRef.current.L) {
+        const mod = await import("leaflet");
+        leafletRef.current.L = mod.default || mod;
+      }
+      const L = leafletRef.current.L;
+      if (cancelled) return;
+
+      if (leafletRef.current.map) {
+        leafletRef.current.map.remove();
+      }
+
+      const map = L.map(mapRef.current).setView([mapCoords.lat, mapCoords.lng], 17);
+      leafletRef.current.map = map;
+
+      ensureMapBehindUI(map, 0);
+
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 20,
+        attribution: "&copy; OpenStreetMap"
+      }).addTo(map);
+
+      leafletRef.current.destMarker = L.marker([mapCoords.lat, mapCoords.lng], {
+        icon: L.divIcon({ html: "🎯", iconSize: [20, 20], className: "destination-marker" }),
+      }).addTo(map).bindPopup("Grave Location");
+
+      leafletRef.current.startMarker = L.circleMarker([userLocation.lat, userLocation.lng], {
+        radius: 8, color: "#0ea5e9", weight: 3, fillOpacity: 0.8,
+      }).addTo(map).bindPopup("Your Location");
+
+      try {
+        setRouteStatus("Computing optimal route…");
+        const { polyline, distance } = await buildRoutedPolyline(
+          userLocation, mapCoords, graph, { userM: 25, destM: 25 }
+        );
+        if (!cancelled) {
+          if (!polyline.length) {
+            setRouteStatus("No route found");
+            return;
+          }
+          setRouteDistance(distance);
+          if (leafletRef.current.routeLine) map.removeLayer(leafletRef.current.routeLine);
+          leafletRef.current.routeLine = L.polyline(polyline, {
+            weight: 4, opacity: 0.9, color: "#059669", smoothFactor: 1.0,
+          }).addTo(map);
+          const bounds = L.latLngBounds(polyline);
+          map.fitBounds(bounds, { padding: [20, 20] });
+          setRouteStatus("Route computed");
+        }
+      } catch (e) {
+        console.error("Route computation failed:", e);
+        setRouteStatus("Route computation failed");
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [mapMounted, mapCoords, userLocation, graph]);
+
+  // Recompute route on location changes
+  useEffect(() => {
+    if (!leafletRef.current.map || !mapCoords || !userLocation || !graph) return;
+    const L = leafletRef.current.L;
+    const map = leafletRef.current.map;
+
+    if (leafletRef.current.startMarker) {
+      leafletRef.current.startMarker.setLatLng([userLocation.lat, userLocation.lng]);
+    }
+
+    (async () => {
+      try {
+        setRouteStatus("Updating route…");
+        const { polyline, distance } = await buildRoutedPolyline(
+          userLocation, mapCoords, graph, { userM: 25, destM: 25 }
+        );
+        if (!polyline.length) {
+          setRouteStatus("No route found");
+          return;
+        }
+        setRouteDistance(distance);
+        if (leafletRef.current.routeLine) map.removeLayer(leafletRef.current.routeLine);
+        leafletRef.current.routeLine = L.polyline(polyline, {
+          weight: 4, opacity: 0.9, color: "#059669", smoothFactor: 1.0,
+        }).addTo(map);
+        setRouteStatus("Route updated");
+      } catch (e) {
+        console.error("Route update failed:", e);
+        setRouteStatus("Route update failed");
+      }
+    })();
+  }, [userLocation, mapCoords, graph]);
+
+  useEffect(() => {
+    return () => {
+      if (leafletRef.current.map) {
+        try { leafletRef.current.map.remove(); } catch {}
+      }
+    };
+  }, []);
+
+  // ------------------------- Search form handlers --------------------------
+  function validateDates() {
+    if (!birthDate || !deathDate) return "Please provide both Birth Date and Death Date.";
+    return "";
+  }
+
+  function onSubmit(e) {
+    e.preventDefault();
+    setScanResult(null);
+    setNotFoundMsg("");
+    setResults([]);
+    setSuggestions([]);
+    setSelected(null);
+    setScanDataForSelected(null);
+    setMapCoords(null);
+
+    const dateErr = validateDates();
+    if (dateErr) {
+      setNotFoundMsg(dateErr);
+      return;
+    }
+
+    const fn = firstName.trim();
+    const ln = lastName.trim();
+
+    // Filter by exact dates only
+    const dateFiltered = rows.filter((r) =>
+      sameDate(r.birth_date, birthDate) && sameDate(r.death_date, deathDate)
+    );
+
+    if (!dateFiltered.length) {
+      setNotFoundMsg("No records match the given Birth and Death dates.");
+      return;
+    }
+
+    // If no name provided, show everything from these exact dates as results
+    if (!fn && !ln) {
+      const sorted = [...dateFiltered].sort((a, b) =>
+        String(a.deceased_name || "").localeCompare(String(b.deceased_name || ""))
+      );
+      setResults(sorted);
+      setSuggestions([]);
+      if (sorted.length === 1) handleSelect(sorted[0]);
+      return;
+    }
+
+    // Fuzzy only: compute score and split into results/suggestions
+    const withScores = dateFiltered
+      .map((r) => ({ row: r, score: nameScore(fn, ln, r.deceased_name || "") }))
+      .sort((a, b) => b.score - a.score);
+
+    const STRONG = 0.70;     // results threshold
+    const WEAK_MIN = 0.40;   // suggestions lower bound
+
+    const strong = withScores.filter(({ score }) => score >= STRONG).map(({ row }) => row);
+    const weak   = withScores.filter(({ score }) => score >= WEAK_MIN && score < STRONG).map(({ row }) => row);
+
+    if (!strong.length && !weak.length) {
+      setNotFoundMsg("No records found for those dates with a similar name.");
+    }
+
+    setResults(strong);
+    setSuggestions(weak);
+
+    if (strong.length === 1) handleSelect(strong[0]);
+  }
+
+  function handleSelect(row) {
+    setScanResult(null);
+    setSelected(row || null);
+
+    const parsed = parseLatLngFromToken(row?.qr_token);
+    const coords = parsed && Number.isFinite(parsed.lat) && Number.isFinite(parsed.lng)
+      ? { lat: parsed.lat, lng: parsed.lng }
+      : null;
+
+    setScanDataForSelected(parsed?.data && typeof parsed.data === "object" ? parsed.data : null);
+    setMapCoords(coords);
+  }
+
+  // ------------------------- QR: 3-tier decoding ---------------------------
+  function closeScanModal() {
+    stopCamera();
+    setScanErr("");
+    setScanMode("choose");
+    setScanModalOpen(false);
+  }
+
+  async function startCamera() {
+    setScanErr("");
+    setScanMode("camera");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: "environment" },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        }
+      });
+      const v = videoRef.current;
+      if (!v) return;
+      v.srcObject = stream;
+      await v.play();
+
+      // 1) Native BarcodeDetector live
+      let barcodeDetector = null;
+      if ("BarcodeDetector" in window) {
+        try {
+          const formats = await window.BarcodeDetector.getSupportedFormats?.();
+          if (!formats || formats.includes("qr_code")) {
+            barcodeDetector = new window.BarcodeDetector({ formats: ["qr_code"] });
+          }
+        } catch {}
+      }
+
+      const tick = async () => {
+        try {
+          if (barcodeDetector) {
+            const codes = await barcodeDetector.detect(v);
+            if (codes && codes.length) {
+              handleQrFound(codes[0].rawValue || "");
+              return;
+            }
+          }
+
+          // 2) jsQR on a canvas
+          const canvas = canvasRef.current || (canvasRef.current = document.createElement("canvas"));
+          const cw = Math.min(1024, v.videoWidth || 640);
+          const ch = Math.floor((cw / (v.videoWidth || 640)) * (v.videoHeight || 480));
+          canvas.width = cw;
+          canvas.height = ch;
+          const ctx = canvas.getContext("2d", { willReadFrequently: true });
+          ctx.drawImage(v, 0, 0, cw, ch);
+          const imageData = ctx.getImageData(0, 0, cw, ch);
+
+          const { default: jsQR } = await import("jsqr");
+          const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "attemptBoth" });
+          if (code && code.data) {
+            handleQrFound(code.data);
+            return;
+          }
+        } catch {}
+        rafRef.current = requestAnimationFrame(tick);
+      };
+      rafRef.current = requestAnimationFrame(tick);
+    } catch {
+      setScanErr("Unable to access camera.");
+    }
+  }
+
+  function stopCamera() {
+    cancelAnimationFrame(rafRef.current);
+    const v = videoRef.current;
+    if (v?.srcObject) {
+      v.srcObject.getTracks?.().forEach((t) => t.stop?.());
+      v.srcObject = null;
+    }
+  }
+
+  // Decode from uploaded image using: BarcodeDetector → ZXing → jsQR
+  async function handleUploadFile(file) {
+    if (!file) return;
+    setScanErr("");
+    setScanMode("upload");
+
+    const url = URL.createObjectURL(file);
+    const cleanup = () => URL.revokeObjectURL(url);
+
+    try {
+      const bmp = await createImageBitmap(await (await fetch(url)).blob());
+      const canvas = document.createElement("canvas");
+      const cw = Math.min(1600, bmp.width);
+      const ch = Math.floor((cw / bmp.width) * bmp.height);
+      canvas.width = cw; canvas.height = ch;
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(bmp, 0, 0, cw, ch);
+
+      // 1) BarcodeDetector
+      if ("BarcodeDetector" in window) {
+        try {
+          const supported = await window.BarcodeDetector.getSupportedFormats?.();
+          if (!supported || supported.includes("qr_code")) {
+            const det = new window.BarcodeDetector({ formats: ["qr_code"] });
+            const codes = await det.detect(canvas);
+            if (codes?.length) {
+              handleQrFound(codes[0].rawValue || "");
+              cleanup();
+              return;
+            }
+          }
+        } catch {}
+      }
+
+      // 2) ZXing
+      try {
+        const { BrowserQRCodeReader } = await import("@zxing/browser");
+        const z = new BrowserQRCodeReader();
+        const res = await z.decodeFromImageUrl(url);
+        if (res?.getText) {
+          handleQrFound(res.getText());
+          cleanup();
+          return;
+        }
+      } catch {}
+
+      // 3) jsQR
+      try {
+        const imageData = ctx.getImageData(0, 0, cw, ch);
+        const { default: jsQR } = await import("jsqr");
+        const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "attemptBoth" });
+        if (code && code.data) {
+          handleQrFound(code.data);
+          cleanup();
+          return;
+        }
+      } catch {}
+
+      setScanErr("No QR code detected in the image.");
+    } catch (e) {
+      setScanErr(e?.message || "Failed to decode QR image.");
+    } finally {
+      cleanup();
+    }
+  }
+
+  function handleQrFound(text) {
+    stopCamera();
+    setScanModalOpen(false);
+    setSelected(null);
+    setScanDataForSelected(null);
+
+    const parsed = parseLatLngFromToken(text);
+    const coords = parsed && Number.isFinite(parsed.lat) && Number.isFinite(parsed.lng)
+      ? { lat: parsed.lat, lng: parsed.lng }
+      : null;
+
+    setMapCoords(coords);
+    setScanResult({ token: text, coords, data: parsed?.data || null });
+  }
+
+  // ----------------------------- Result card ------------------------------
+  function RecordCard({ row, onPick }) {
+    const parsed = parseLatLngFromToken(row?.qr_token);
+    const hasCoords = parsed && Number.isFinite(parsed.lat) && Number.isFinite(parsed.lng);
+
+    return (
+      <Card className="border-slate-200">
+        <CardHeader className="pb-2">
+          <CardDescription>
+            {row.deceased_name ? row.deceased_name : "Unnamed"} · Born {formatDate(row.birth_date)} · Died {formatDate(row.death_date)}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex items-center justify-between gap-4">
+          <div className="text-sm text-slate-600" />
+          <Button size="sm" onClick={() => onPick?.(row)}>
+            View details {hasCoords ? "and location" : ""}
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // =======================================================================
+  // UI
+  // =======================================================================
   return (
-    <div className="min-h-screen bg-slate-50">
-      <div className="mx-auto max-w-6xl px-4 py-3">
-        <div className="mb-2 text-sm text-slate-700">
-          <b>User:</b>{" "}
-          {location ? `${location.lat.toFixed(6)}, ${location.lng.toFixed(6)}` : "—"}{" "}
-          · <b>Dest:</b> {DEST.lat.toFixed(6)}, {DEST.lng.toFixed(6)} · {status}{" "}
-          {distance > 0 && <> · <b>{fmt(distance)}</b></>}
-          <div className="text-xs text-slate-500">
-            Legs cached under <code>{CACHE_NS}</code>. Mock point {idx + 1}/{MOCK_POINTS.length}, changes every {Math.round(MOCK_INTERVAL_MS / 1000)}s.
+    <div className="min-h-screen bg-slate-50 font-poppins">
+      {/* Header */}
+      <section className="pt-24 pb-8">
+        <div className="mx-auto w-full max-w-7xl px-6 lg:px-8">
+          <div className="mb-2 text-sm text-slate-500">
+            <NavLink to="/" className="hover:text-slate-700">Home</NavLink>
+            &nbsp;›&nbsp;<span className="text-slate-700">Search For Deceased</span>
           </div>
+
+          <Card className="border-slate-200">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-2xl sm:text-3xl">Search For Deceased</CardTitle>
+              <CardDescription>Search by name (fuzzy) with exact birth and death dates, or scan a QR code.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {/* Search form */}
+              <form onSubmit={onSubmit} className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <div>
+                  <label htmlFor="firstName" className="mb-1 block text-sm text-slate-600">First Name</label>
+                  <Input
+                    id="firstName"
+                    value={firstName}
+                    onChange={(e) => setFirstName(e.target.value)}
+                    placeholder="e.g., Juan"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="lastName" className="mb-1 block text-sm text-slate-600">Last Name</label>
+                  <Input
+                    id="lastName"
+                    value={lastName}
+                    onChange={(e) => setLastName(e.target.value)}
+                    placeholder="e.g., Dela Cruz"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="birthDate" className="mb-1 block text-sm text-slate-600">Birth Date</label>
+                  <Input
+                    id="birthDate"
+                    type="date"
+                    value={birthDate}
+                    onChange={(e) => setBirthDate(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label htmlFor="deathDate" className="mb-1 block text-sm text-slate-600">Death Date</label>
+                  <Input
+                    id="deathDate"
+                    type="date"
+                    value={deathDate}
+                    onChange={(e) => setDeathDate(e.target.value)}
+                  />
+                </div>
+                <div className="sm:col-span-2 lg:col-span-4 flex gap-2 pt-1">
+                  <Button type="submit">Search</Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      setFirstName("");
+                      setLastName("");
+                      setBirthDate("");
+                      setDeathDate("");
+                      setResults([]);
+                      setSuggestions([]);
+                      setNotFoundMsg("");
+                      setSelected(null);
+                      setScanDataForSelected(null);
+                      setScanResult(null);
+                      setMapCoords(null);
+                    }}
+                  >
+                    Clear
+                  </Button>
+                </div>
+              </form>
+
+              {/* Divider + Scan button */}
+              <div className="flex items-center gap-4 my-6">
+                <div className="h-px flex-1 bg-slate-200" />
+                <div className="text-xs uppercase tracking-wide text-slate-400">or</div>
+                <div className="h-px flex-1 bg-slate-200" />
+              </div>
+
+              <div className="flex justify-center">
+                <Button onClick={() => {
+                  setScanModalOpen(true);
+                  setScanMode("choose");
+                  setScanErr("");
+                }}>
+                  Scan QR Code
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
         </div>
-        <div ref={mapRef} className="h-[520px] w-full rounded-md border bg-white" />
-      </div>
+      </section>
+
+      {/* Loading / error states */}
+      <section className="pb-6">
+        <div className="mx-auto w-full max-w-7xl px-6 lg:px-8 space-y-3">
+          {loading && (
+            <Card>
+              <CardContent className="p-6 text-center text-slate-500">
+                Loading records…
+              </CardContent>
+            </Card>
+          )}
+          {error && (
+            <Card>
+              <CardContent className="p-6 text-center text-rose-600">
+                {error}
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      </section>
+
+      {/* Search results */}
+      {(results.length > 0 || suggestions.length > 0 || notFoundMsg) && (
+        <section className="pb-2">
+          <div className="mx-auto w-full max-w-7xl px-6 lg:px-8 space-y-4">
+            {notFoundMsg && (
+              <Card>
+                <CardContent className="p-6 text-center text-slate-600">
+                  {notFoundMsg}
+                </CardContent>
+              </Card>
+            )}
+
+            {results.length > 0 && (
+              <div className="space-y-2">
+                <div className="text-sm font-medium text-slate-700">Results</div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {results.map((r) => (
+                    <RecordCard key={`res-${r.id}`} row={r} onPick={handleSelect} />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {suggestions.length > 0 && (
+              <div className="space-y-2">
+                <div className="text-sm font-medium text-slate-700">Suggestions</div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {suggestions.map((r) => (
+                    <RecordCard key={`sug-${r.id}`} row={r} onPick={handleSelect} />
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* Selected record details + Map (from search) */}
+      {selected && mapCoords && (
+        <section className="pb-10">
+          <div className="mx-auto w-full max-w-7xl px-6 lg:px-8 space-y-4">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              <Card className="overflow-hidden lg:col-span-2">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-lg">Route to Grave</CardTitle>
+                  <CardDescription>
+                    From your location to the grave site
+                    {routeDistance > 0 && <span> • <strong>{fmtDistance(routeDistance)}</strong></span>}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {routeStatus && (
+                    <div className="text-sm text-slate-600 bg-slate-50 px-3 py-2 rounded-md">
+                      Status: {routeStatus}
+                    </div>
+                  )}
+                  <div ref={setMapNode} className="w-full h-[420px] rounded-md border z-0 relative" />
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-lg">Burial Record</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  {scanDataForSelected && typeof scanDataForSelected === "object" ? (
+                    <div className="space-y-2">
+                      {(() => {
+                        const entries = qrDisplayEntries(scanDataForSelected);
+                        if (entries.length === 0) return <div className="text-sm text-slate-500">No displayable fields.</div>;
+                        return entries.map(({ key, label, value }) => (
+                          <div key={key} className="text-sm">
+                            <div className="text-slate-500">{label}</div>
+                            <div className="rounded-md border border-slate-200 bg-white px-3 py-2 text-slate-800 break-words">
+                              {value}
+                            </div>
+                          </div>
+                        ));
+                      })()}
+                    </div>
+                  ) : (
+                    <div className="space-y-2 text-sm">
+                      <div>
+                        <div className="text-slate-500">Deceased Name</div>
+                        <div className="rounded-md border border-slate-200 bg-white px-3 py-2 text-slate-800 break-words">
+                          {selected.deceased_name || "—"}
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <div className="text-slate-500">Birth Date</div>
+                          <div className="rounded-md border border-slate-200 bg-white px-3 py-2 text-slate-800">
+                            {formatDate(selected.birth_date)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-slate-500">Death Date</div>
+                          <div className="rounded-md border border-slate-200 bg-white px-3 py-2 text-slate-800">
+                            {formatDate(selected.death_date)}
+                          </div>
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-slate-500">Plot</div>
+                        <div className="rounded-md border border-slate-200 bg-white px-3 py-2 text-slate-800">
+                          {selected.plot_id ?? "—"}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+
+            <div className="text-center">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setSelected(null);
+                  setScanDataForSelected(null);
+                  setMapCoords(null);
+                }}
+              >
+                Back to results
+              </Button>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Map + QR details (from scanning) */}
+      {scanResult && mapCoords && (
+        <section className="pb-6">
+          <div className="mx-auto w-full max-w-7xl px-6 lg:px-8 space-y-4">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              <Card className="overflow-hidden lg:col-span-2">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-lg">Route to Grave</CardTitle>
+                  <CardDescription>
+                    From your location to the grave site
+                    {routeDistance > 0 && <span> • <strong>{fmtDistance(routeDistance)}</strong></span>}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {routeStatus && (
+                    <div className="text-sm text-slate-600 bg-slate-50 px-3 py-2 rounded-md">
+                      Status: {routeStatus}
+                    </div>
+                  )}
+                  <div ref={setMapNode} className="w-full h-[420px] rounded-md border" />
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-lg">Burial Record</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  {scanResult.data && typeof scanResult.data === "object" ? (
+                    <div className="space-y-2">
+                      {(() => {
+                        const entries = qrDisplayEntries(scanResult.data);
+                        if (entries.length === 0) return <div className="text-sm text-slate-500">No displayable fields.</div>;
+                        return entries.map(({ key, label, value }) => (
+                          <div key={key} className="text-sm">
+                            <div className="text-slate-500">{label}</div>
+                            <div className="rounded-md border border-slate-200 bg-white px-3 py-2 text-slate-800 break-words">
+                              {value}
+                            </div>
+                          </div>
+                        ));
+                      })()}
+                    </div>
+                  ) : (
+                    <div className="text-sm text-slate-600 break-all">
+                      <span className="font-semibold">Raw:</span> {scanResult.token}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+
+            <div className="text-center">
+              <Button onClick={() => {
+                setScanResult(null);
+                setScanModalOpen(true);
+                setScanMode("choose");
+                setMapCoords(null);
+              }}>
+                Scan another QR Code
+              </Button>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Scan Modal */}
+      <Dialog open={scanModalOpen} onOpenChange={(o) => (o ? setScanModalOpen(true) : closeScanModal())}>
+        <DialogContent className="sm:max-w-2xl" onInteractOutside={(e) => e.preventDefault()}>
+          <DialogHeader>
+            <DialogTitle>Scan a QR Code</DialogTitle>
+            <DialogDescription>Use your camera or upload a QR image to locate a grave on the map.</DialogDescription>
+          </DialogHeader>
+
+        {scanMode === "choose" && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Button onClick={startCamera}>Open Camera</Button>
+
+            <div className="flex items-center justify-center">
+              <label
+                htmlFor="qr-upload"
+                className="w-full cursor-pointer rounded-md border border-input bg-background px-4 py-2.5 text-center text-sm font-medium hover:bg-accent hover:text-accent-foreground"
+              >
+                Upload QR Image
+              </label>
+              <input
+                id="qr-upload"
+                ref={fileRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onClick={(e) => { e.currentTarget.value = ""; }}
+                onChange={(e) => handleUploadFile(e.target.files?.[0] || null)}
+              />
+            </div>
+          </div>
+        )}
+
+        {scanMode === "camera" && (
+          <div className="space-y-3">
+            <div className="rounded-lg overflow-hidden border">
+              <div className="w-full aspect-video bg-muted/40">
+                <video ref={videoRef} className="w-full h-full object-cover" muted playsInline />
+              </div>
+            </div>
+
+            {scanErr && (
+              <div className="rounded-md border border-rose-200 bg-rose-50 text-rose-700 px-3 py-2 text-sm">
+                {scanErr}
+              </div>
+            )}
+
+            <DialogFooter className="gap-2 sm:gap-0">
+              <Button variant="outline" onClick={() => { stopCamera(); setScanMode("choose"); }}>
+                Back
+              </Button>
+              <Button onClick={closeScanModal}>Close</Button>
+            </DialogFooter>
+          </div>
+        )}
+
+        {scanMode === "upload" && (
+          <div className="text-sm text-slate-600">
+            Processing image… {scanErr && <span className="text-rose-600 font-medium ml-2">{scanErr}</span>}
+          </div>
+        )}
+
+        {scanErr && scanMode !== "upload" && scanMode !== "camera" && (
+          <div className="rounded-md border border-rose-200 bg-rose-50 text-rose-700 px-3 py-2 text-sm">
+            {scanErr}
+          </div>
+        )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Location Permission Modal */}
+      <Dialog open={locationModalOpen} onOpenChange={setLocationModalOpen}>
+        <DialogContent className="sm:max-w-md" onInteractOutside={(e) => e.preventDefault()}>
+          <DialogHeader>
+            <DialogTitle>Use Your Location?</DialogTitle>
+            <DialogDescription>
+              We need your location to show you the best route to the grave site.
+              If you decline, we'll use the cemetery entrance as the starting point.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={useDefaultLocation}>
+              Use Cemetery Entrance
+            </Button>
+            <Button onClick={requestUserLocation}>
+              Allow Location Access
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -1,5 +1,5 @@
-import { Fragment, useEffect, useState } from "react";
-import { NavLink } from "react-router-dom";
+import { Fragment, useEffect, useMemo, useState } from "react";
+import { NavLink, useNavigate } from "react-router-dom";
 import { Button } from "../components/ui/button";
 import {
   Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger,
@@ -8,29 +8,43 @@ import {
   NavigationMenu, NavigationMenuItem, NavigationMenuLink, NavigationMenuList,
 } from "../components/ui/navigation-menu";
 import { Separator } from "../components/ui/separator";
-import { Menu } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+} from "../components/ui/dropdown-menu";
+import { Menu, LogOut, Ticket, User2 } from "lucide-react";
+import ProfileModal from "../components/Profile";
+import MyRequest from "../components/MyRequest";
+import MyDeceasedFamily from "../components/MyDeceasedFamily";
 
 const API_BASE =
   (typeof import.meta !== "undefined" && import.meta.env?.VITE_API_BASE_URL) || "";
 const IMG_BASE =
   (typeof import.meta !== "undefined" && import.meta.env?.VITE_API_BASE_URL_IMAGE) || API_BASE;
 
-// Make relative asset paths absolute to IMG_BASE and encode safely.
 const resolveAssetUrl = (p) => {
   if (!p) return null;
-  try {
-    // new URL handles absolute URLs and encodes spaces/parentheses in the path
-    return new URL(p, IMG_BASE.replace(/\/+$/, "") + "/").toString();
-  } catch {
-    return p;
-  }
+  try { return new URL(p, IMG_BASE.replace(/\/+$/, "") + "/").toString(); }
+  catch { return p; }
 };
 
 export default function Topbar() {
+  const nav = useNavigate();
+
   const [scrolled, setScrolled] = useState(false);
   const [siteName, setSiteName] = useState("Garden of Peace");
   const [siteLogoUrl, setSiteLogoUrl] = useState(null);
   const [logoError, setLogoError] = useState(false);
+
+  // Modal + mobile sheet state
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [myReqOpen, setMyReqOpen] = useState(false); 
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [myFamilyOpen, setMyFamilyOpen] = useState(false);
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 8);
@@ -39,7 +53,6 @@ export default function Topbar() {
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
-  // fetch public cemetery info
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -54,17 +67,26 @@ export default function Topbar() {
           setSiteLogoUrl(resolveAssetUrl(d.logo_url));
           setLogoError(false);
         }
-      } catch {
-        /* ignore; keep defaults */
-      }
+      } catch {}
     })();
     return () => { cancelled = true; };
   }, []);
 
-  const authRaw = localStorage.getItem("auth");
-  const auth = authRaw ? JSON.parse(authRaw) : null;
+  const authRaw = typeof window !== "undefined" ? localStorage.getItem("auth") : null;
+  const auth = useMemo(() => {
+    try { return authRaw ? JSON.parse(authRaw) : null; } catch { return null; }
+  }, [authRaw]);
+
   const role = auth?.user?.role || null;
   const showVisitorNav = !role || role === "visitor";
+  const isVisitorLoggedIn = Boolean(auth?.user && role === "visitor");
+  const firstName = auth?.user?.first_name || "";
+  const lastName = auth?.user?.last_name || "";
+
+  function handleLogout() {
+    try { localStorage.removeItem("auth"); } catch {}
+    nav("/visitor/login");
+  }
 
   return (
     <Fragment>
@@ -82,7 +104,7 @@ export default function Topbar() {
           <div className="py-5 md:py-6 flex items-center justify-between">
             <div className="flex items-center gap-3">
               {showVisitorNav && (
-                <Sheet>
+                <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
                   <SheetTrigger asChild>
                     <Button
                       variant="ghost"
@@ -103,7 +125,51 @@ export default function Topbar() {
                       <MobileLink to="/visitor/home" label="Home" />
                       <MobileLink to="/visitor/search" label="Search For Deceased" />
                       <MobileLink to="/visitor/inquire" label="Inquire" />
-                      <MobileLink to="/visitor/login" label="Login" />
+
+                      {!isVisitorLoggedIn ? (
+                        <MobileLink to="/visitor/login" label="Login" />
+                      ) : (
+                        <div className="mt-2">
+                          <div className="block px-4 py-3 rounded-lg text-base font-semibold text-emerald-700 bg-emerald-50">
+                            Welcome {firstName} {lastName}
+                          </div>
+                          <div className="mt-2 grid gap-2 px-1">
+                            {/* OPEN PROFILE MODAL ON MOBILE */}
+                            <Button
+                              variant="secondary"
+                              className="justify-start"
+                              onClick={() => { setMobileOpen(false); setProfileOpen(true); }}
+                            >
+                              <User2 className="mr-2 h-4 w-4" />
+                              My Profile
+                            </Button>
+
+                            <Button
+                              variant="outline"
+                              className="justify-start"
+                              onClick={() => { setMobileOpen(false); setMyFamilyOpen(true); }}
+                            >
+                              <User2 className="mr-2 h-4 w-4" />
+                              My Deceased Family
+                            </Button>
+
+                            <Button
+                              variant="outline"
+                              className="justify-start"
+                              onClick={() => { setMobileOpen(false); setMyReqOpen(true); }}
+                            >
+                              <Ticket className="mr-2 h-4 w-4" />
+                              My Requests
+                            </Button>
+
+                            <Button variant="destructive" className="justify-start" onClick={handleLogout}>
+                              <LogOut className="mr-2 h-4 w-4" />
+                              Logout
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+
                       <Separator className="my-4" />
                       <div className="px-3 text-xs uppercase tracking-wider text-slate-500">Quick Actions</div>
                       <div className="mt-2 grid grid-cols-2 gap-2 px-3">
@@ -119,7 +185,7 @@ export default function Topbar() {
                 </Sheet>
               )}
 
-              {/* Brand: logo + name */}
+              {/* Brand */}
               <div className="flex items-center gap-2">
                 {siteLogoUrl && !logoError ? (
                   <img
@@ -143,7 +209,57 @@ export default function Topbar() {
                     <NavButton to="/visitor/home" label="Home" />
                     <NavButton to="/visitor/search" label="Search For Deceased" />
                     <NavButton to="/visitor/inquire" label="Inquire" />
-                    <NavButton to="/visitor/login" label="Login" />
+
+                    {!isVisitorLoggedIn ? (
+                      <NavButton to="/visitor/login" label="Login" />
+                    ) : (
+                      <NavigationMenuItem>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" className="text-emerald-700 hover:text-emerald-800 font-semibold">
+                              Welcome {firstName} {lastName}
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent side="bottom" align="end" className="w-56">
+                            <DropdownMenuLabel className="font-medium">Visitor</DropdownMenuLabel>
+                            <DropdownMenuSeparator />
+                            {/* OPEN PROFILE MODAL ON DESKTOP */}
+                            <DropdownMenuItem
+                              onSelect={(e) => { e.preventDefault(); setProfileOpen(true); }}
+                              className="cursor-pointer"
+                            >
+                              <User2 className="mr-2 h-4 w-4" />
+                              My Profile
+                            </DropdownMenuItem>
+
+                            <DropdownMenuItem
+                              onSelect={(e) => { e.preventDefault(); setMyFamilyOpen(true); }}
+                              className="cursor-pointer"
+                            >
+                              <User2 className="mr-2 h-4 w-4" />
+                              My Deceased Family
+                            </DropdownMenuItem>
+
+                            <DropdownMenuItem
+                              onSelect={(e) => { e.preventDefault(); setMyReqOpen(true); }}
+                              className="cursor-pointer"
+                            >
+                              <Ticket className="mr-2 h-4 w-4" />
+                              My Requests
+                            </DropdownMenuItem>
+
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              onSelect={(e) => { e.preventDefault(); handleLogout(); }}
+                              className="text-rose-600 focus:text-rose-600 cursor-pointer"
+                            >
+                              <LogOut className="mr-2 h-4 w-4" />
+                              Logout
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </NavigationMenuItem>
+                    )}
                   </NavigationMenuList>
                 </NavigationMenu>
               </div>
@@ -151,6 +267,16 @@ export default function Topbar() {
           </div>
         </div>
       </header>
+
+      {/* Modals */}
+      <ProfileModal open={profileOpen} onOpenChange={setProfileOpen} />
+      <MyRequest open={myReqOpen} onOpenChange={setMyReqOpen} />
+      <MyDeceasedFamily
+        open={myFamilyOpen}
+        onOpenChange={setMyFamilyOpen}
+        burialId={auth?.user?.id}
+      /> 
+
       <div className="h-5" />
     </Fragment>
   );

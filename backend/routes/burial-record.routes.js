@@ -4,4 +4,6 @@ const BurialRecordsController = require('../controllers/burial-records.controlle
 
 router.get('/graves', BurialRecordsController.getBurialRecords);
 
+router.get('/graves/family/:id', BurialRecordsController.getBurialRecords);
+
 module.exports = router;

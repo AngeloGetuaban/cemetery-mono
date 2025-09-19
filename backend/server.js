@@ -1,3 +1,4 @@
+// server.js
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -11,34 +12,37 @@ const pool = require('./config/database');
 
 const app = express();
 
-
-app.use(helmet({
-  crossOriginResourcePolicy: { policy: "cross-origin" }, // allow embedding from other origins
-  crossOriginEmbedderPolicy: false,                      // don’t require CORP on everything
-}));
-
-// security & body parsing
-app.use(helmet());
+// ---- security
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+    crossOriginEmbedderPolicy: false,
+  })
+);
 app.use(cors());
+
+// ---- body parsing
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// logs
+// ---- logs
 app.use(morgan('dev'));
 
-// serve uploaded images
-app.use('/uploads', express.static(
-  path.join(process.cwd(), 'uploads'),
-  {
-    setHeaders(res/*, filePath*/) {
-      res.setHeader('Access-Control-Allow-Origin', '*');             // or your FE origin
-      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin'); // important
-    }
-  }
-));
+// ---- serve uploaded images
+app.use(
+  '/uploads',
+  express.static(path.join(process.cwd(), 'uploads'), {
+    setHeaders(res) {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    },
+  })
+);
 
-// root route – check DB connection
-app.get('/', async (req, res) => {
+// ---- health checks
+app.get('/health', (_req, res) => res.json({ ok: true }));
+
+app.get('/', async (_req, res) => {
   try {
     const result = await pool.query('SELECT NOW() AS now');
     res.json({
@@ -52,15 +56,28 @@ app.get('/', async (req, res) => {
   }
 });
 
-// health only (no DB)
-app.get('/health', (_req, res) => res.json({ ok: true }));
-
-// api
+// ---- API
 app.use('/api', api);
 
-// 404 + error
+// ---- FRONTEND (built React/Vite app)
+
+// --- Serve the built frontend (resolve from backend/ up to repo root)
+const ROOT_DIR = path.resolve(__dirname, '..');                 // <repo-root>
+const FRONTEND_DIR = path.join(ROOT_DIR, 'frontend', 'dist');   // <repo-root>/frontend/dist
+
+app.use(express.static(FRONTEND_DIR));
+
+// SPA fallback for non-API routes
+app.get(/^(?!\/api\/|\/uploads\/|\/health$).*/, (req, res) => {
+  res.sendFile(path.join(FRONTEND_DIR, 'index.html'));
+});
+
+// ---- 404 + error handlers
 app.use(notFound);
 app.use(errorHandler);
 
+// ---- start
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => console.log(`🚀 API listening on http://localhost:${PORT}`));
+app.listen(PORT, () => {
+  console.log(`🚀 Server listening on http://localhost:${PORT}`);
+});

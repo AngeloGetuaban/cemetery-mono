@@ -14,7 +14,7 @@ router.post('/register', register);
 
 router.post('/logout', verifyToken, logout);
 router.get('/me', verifyToken, me);
-router.patch('/profile', verifyToken, updateProfile);
+router.patch('/update-profile', verifyToken, updateProfile);
 router.post('/change-password', verifyToken, changePassword);
 
 router.post('/admin/register', verifyToken, requireRole('admin'), register);

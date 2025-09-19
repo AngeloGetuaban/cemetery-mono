@@ -1,5 +1,5 @@
 import { NavLink, useLocation } from "react-router-dom";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { getAuth } from "../utils/auth";
 import {
   LayoutDashboard,
@@ -23,6 +23,9 @@ import { Separator } from "../components/ui/separator";
 import { ScrollArea } from "../components/ui/scroll-area";
 import { Card, CardHeader, CardContent } from "../components/ui/card";
 
+// ⬇️ Your modal component
+import ProfileModal from "../components/Profile";
+
 const W_FULL = 272;
 const W_COLLAPSED = 120;
 const cx = (...c) => c.filter(Boolean).join(" ");
@@ -34,12 +37,23 @@ export default function Sidebar({ base = "" }) {
   const [collapsed, setCollapsed] = useState(false);
   const [q, setQ] = useState("");
 
-  const auth = getAuth();
-  const user = auth?.user || {};
+  const [authObj, setAuthObj] = useState(() => getAuth());
+  const user = authObj?.user || {};
   const role = user?.role || "visitor";
+  if (role === "visitor") return null;
   const fullName = `${user?.first_name ?? ""} ${user?.last_name ?? ""}`.trim() || "—";
   const initials =
     ((user?.first_name?.[0] || "") + (user?.last_name?.[0] || "") || "CL").toUpperCase();
+
+  const [profileOpen, setProfileOpen] = useState(false);
+
+  // When the modal closes, re-read localStorage (your modal writes to it after save)
+  useEffect(() => {
+    if (!profileOpen) {
+      const fresh = getAuth();
+      setAuthObj(fresh);
+    }
+  }, [profileOpen]);
 
   const prefix = String(base || "").replace(/\/+$/, "");
   const { pathname } = useLocation();
@@ -77,10 +91,9 @@ export default function Sidebar({ base = "" }) {
     }
     if (role === "staff") {
       return [
-        { to: "/staff/dashboard", label: "Dashboard", icon: I.dashboard },
-        { to: "/staff/tickets", label: "View Tickets", icon: I.tickets },
-        { to: "/staff/burials", label: "Burial Schedule", icon: I.burials },
-        { to: "/staff/maintenance", label: "Maintenance", icon: I.maintenance },
+        { to: "/tickets", label: "View Tickets", icon: I.tickets },
+        { to: "/burials", label: "Burial Schedule", icon: I.burials },
+        { to: "/maintenance", label: "Maintenance", icon: I.maintenance },
       ];
     }
     return [{ to: "/visitor/dashboard", label: "Dashboard", icon: I.dashboard }];
@@ -92,7 +105,7 @@ export default function Sidebar({ base = "" }) {
 
   async function logout() {
     try {
-      const token = auth?.token;
+      const token = authObj?.token;
       await fetch(`${API_BASE}/logout`, {
         method: "POST",
         headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
@@ -108,7 +121,6 @@ export default function Sidebar({ base = "" }) {
       <aside
         className={cx(
           "fixed left-0 top-0 z-40 h-screen bg-white border-r border-slate-200 flex flex-col",
-          // whole sidebar shadow + subtle ring
           "shadow-[0_10px_40px_-12px_rgba(2,6,23,0.15)] ring-1 ring-slate-100"
         )}
         style={{ width: collapsed ? W_COLLAPSED : W_FULL }}
@@ -116,19 +128,29 @@ export default function Sidebar({ base = "" }) {
         {/* Header card */}
         <Card className="m-4 rounded-2xl border-slate-200 shadow-[0_12px_30px_-12px_rgba(2,6,23,0.18)]">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <div className="flex items-center gap-3">
+            {/* ▶️ Profile modal trigger */}
+            <button
+              type="button"
+              onClick={() => setProfileOpen(true)}
+              title="Open Profile"
+              className={cx(
+                "flex items-center gap-3 rounded-xl",
+                "focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300 focus-visible:ring-offset-2 focus-visible:ring-offset-white",
+                "hover:bg-slate-50 px-1 py-1 -ml-1"
+              )}
+            >
               <div className="grid place-items-center h-10 w-10 rounded-xl bg-indigo-600 text-white text-sm font-semibold">
                 {initials}
               </div>
               {!collapsed && (
-                <div className="leading-tight">
+                <div className="leading-tight text-left">
                   <div className="text-[13px] font-semibold text-slate-900">{fullName}</div>
                   <div className="text-[11px] text-slate-500">{role.replace("_", " ")}</div>
                 </div>
               )}
-            </div>
+            </button>
 
-            {/* Bordered container for the three line / chevron */}
+            {/* Collapse toggle */}
             <Button
               variant="ghost"
               size="icon"
@@ -170,7 +192,6 @@ export default function Sidebar({ base = "" }) {
                   isActive
                     ? [
                         "text-white",
-                        // active pill with ring + deep shadow + subtle green glow
                         "bg-gradient-to-r from-green-500 to-emerald-600",
                         "ring-1 ring-emerald-400/40",
                         "shadow-[0_14px_30px_-12px_rgba(16,185,129,0.55),0_6px_16px_-8px_rgba(2,6,23,0.25)]",
@@ -202,7 +223,7 @@ export default function Sidebar({ base = "" }) {
         {/* Footer logout */}
         <div className="m-4">
           <Button
-            variant="destructive" // solid red style
+            variant="destructive"
             className="w-full justify-start gap-3 rounded-2xl px-3 py-6 text-[14px] font-medium"
             onClick={logout}
           >
@@ -213,8 +234,12 @@ export default function Sidebar({ base = "" }) {
           </Button>
         </div>
       </aside>
+
       {/* spacer so main content doesn't slide under fixed sidebar */}
       <div aria-hidden style={{ width: collapsed ? W_COLLAPSED : W_FULL }} />
+
+      {/* 🔳 Profile modal mount (controlled) */}
+      <ProfileModal open={profileOpen} onOpenChange={setProfileOpen} />
     </>
   );
 }
